@@ -11,23 +11,23 @@ ecomm_story.num_items = 100
 ecomm_story.slate_size = 5
 
 # =============================
-# ECommUser (non‑myopic) hyperparameters
+# ECommUser (non-myopic) hyperparameters
 # =============================
 
-# ---- Core
+# Core
 ECommUser.num_topics = 10
 ECommUser.num_users = 10
-ECommUser.beta = 4.0                 # was 5.0; soften to reduce myopic clickiness
+ECommUser.beta = 4.0
 ECommUser.reward_mode = "sigmoid"
 
-# ---- Interest dynamics
+# Interest dynamics
 ECommUser.alpha_learn = 0.03
-ECommUser.beta_fatigue = 0.015
-ECommUser.rho_decay = 0.90
+ECommUser.beta_fatigue = 0.03
+ECommUser.rho_decay = 0.95
 ECommUser.eta_forget = 0.01
 ECommUser.interest_drift_sigma = 0.00
 
-# ---- Click‑driven shaping (NEW)
+# Click-driven shaping
 ECommUser.alpha_click_pull = 0.08
 ECommUser.very_aligned_cos = 0.70
 ECommUser.adjacent_low_cos = 0.30
@@ -36,37 +36,40 @@ ECommUser.satiation_mul = 0.06
 ECommUser.novelty_boost_mul = 0.04
 ECommUser.renorm_interests = True
 
-# ---- Continuation (adds novelty momentum + sat_logit)
+# Continuation (adds novelty momentum + sat_logit)
 ECommUser.b0 = -0.90
-ECommUser.b1 = 2.0
-ECommUser.b2 = 1.5
+ECommUser.b1 = 2.5
+ECommUser.b2 = 2.0
 ECommUser.b3 = 0.2
 ECommUser.b4 = 1.0
 
-# ---- Cumulative satisfaction (NEW; mixed into continuation)
+# Cumulative satisfaction (mixed into continuation)
 ECommUser.sat_decay = 0.90
 ECommUser.sat_gain = 0.15
-ECommUser.sat_fatigue = 0.10
-ECommUser.sat_weight = 1.0
+ECommUser.sat_fatigue = 0.20
+ECommUser.sat_weight = 1.2
 
-# ---- Diversity bonus
-ECommUser.lambda_div = 0.20
+# Diversity bonus
+ECommUser.lambda_div = 0.25
 
-# ---- Delayed conversions + spaced‑exposure gate
+# Delayed conversions + spaced-exposure gate
 ECommUser.c0 = -2.0
 ECommUser.c1 = 3.0
 ECommUser.c2 = 1.0
 ECommUser.c3 = 2.5
 ECommUser.p_delay = 0.25
-ECommUser.price_scale = 0.8          # was 0.5; a bit higher = clearer conversion signal
+ECommUser.price_scale = 0.20
 ECommUser.max_queue = 8
-ECommUser.conv_required_exposures = 3
+ECommUser.conv_required_exposures = 5.0
 ECommUser.exposure_decay = 0.90
 ECommUser.gate_steepness = 2.0
 
-# ---- Cascading click / position bias
+# Cascading click / position bias
 ECommUser.pos_weights = (1.0, 0.75, 0.55, 0.40, 0.30)
 ECommUser.no_click_penalty = 0.05
 
-# ---- Repeat exposure penalty
-ECommUser.repeat_penalty = 0.15
+# Repeat exposure penalty
+ECommUser.repeat_penalty = 0.30
+
+# Session control
+ECommUser.force_continue = False

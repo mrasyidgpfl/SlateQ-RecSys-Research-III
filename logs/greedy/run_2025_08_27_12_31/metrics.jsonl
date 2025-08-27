@@ -1,0 +1,4 @@
+{"episode": 0, "total_reward": 1177.622924566269, "loss": 0.0, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0}
+{"episode": 1, "total_reward": 1004.4652509689331, "loss": 0.0, "ndcg@5": 0.0, "slate_mrr": 0.11999999731779099, "click_rate": 1.0}
+{"episode": 2, "total_reward": 1414.0923871994019, "loss": 0.0, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0}
+{"episode": 3, "total_reward": 1336.77086019516, "loss": 0.0, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0}
