@@ -139,9 +139,9 @@ class SlateQExplorationPolicy(tf_policy.TFPolicy):
 
 class SlateQDuelingAgent(tf_agent.TFAgent):
     """
-    Dueling SlateQ with: duelling head, click masking, expected next-slate target
-    with position bias, Double Q, soft or periodic hard target updates, Huber loss,
-    gradient clipping, and reward scaling.
+    Dueling SlateQ with: duelling head, click masking, env-matched cascade expectation
+    with position bias and survival, Double Q, soft or periodic hard target updates,
+    Huber loss, gradient clipping, and reward scaling.
     """
     def __init__(
         self, time_step_spec, action_spec,
@@ -268,11 +268,24 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
         click_pos_t       = slice_time(experience.observation["choice"], 1)
 
         item_feats_tp1_any = slice_time(experience.observation["item_features"], 1)
-        item_feats_rank = tf.rank(item_feats_tp1_any)
-        item_feats_tp1 = tf.case([
-            (tf.equal(item_feats_rank, 4), lambda: item_feats_tp1_any[0, 0]),
-            (tf.equal(item_feats_rank, 3), lambda: item_feats_tp1_any[0]),
-        ], default=lambda: item_feats_tp1_any)
+        rank = tf.rank(item_feats_tp1_any)
+
+        def as_NT():
+            return item_feats_tp1_any
+
+        def squeeze_UNT():
+            return item_feats_tp1_any[0]
+
+        def squeeze_BUNT():
+            return item_feats_tp1_any[0, 0]
+
+        item_feats_NT = tf.case([
+            (tf.equal(rank, 4), squeeze_BUNT),
+            (tf.equal(rank, 3), squeeze_UNT),
+        ], default=as_NT)
+
+        BU = tf.shape(obs_tp1_interest)[0]
+        item_feats_BUNT = tf.tile(tf.expand_dims(item_feats_NT, 0), [BU, 1, 1])
 
         act = experience.action
         act_rank = tf.rank(act)
@@ -306,7 +319,7 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
 
             q_tp1_online_all, _ = self._q_network(obs_tp1, training=False)
 
-            v_all = tf.linalg.matmul(obs_tp1["interest"], item_feats_tp1, transpose_b=True)
+            v_all = tf.einsum("bt,bnt->bn", obs_tp1["interest"], item_feats_BUNT)
             score_next = v_all * q_tp1_online_all
             next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices
 
@@ -314,11 +327,13 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
             q_next_on_slate = tf.gather(q_tp1_target_all, next_topk_idx, axis=1, batch_dims=1)
 
             v_next_on_slate = tf.gather(v_all, next_topk_idx, axis=1, batch_dims=1)
-            p_next = tf.nn.softmax(self._beta * v_next_on_slate, axis=-1)
-            p_next = p_next * self._pos_w
-            p_next = p_next / (tf.reduce_sum(p_next, axis=-1, keepdims=True) + 1e-8)
-
-            expect_next = tf.reduce_sum(p_next * q_next_on_slate, axis=-1)
+            p = tf.nn.sigmoid(self._beta * v_next_on_slate)
+            p = tf.clip_by_value(p, 0.0, 1.0 - 1e-6)
+            p = p * self._pos_w
+            p = tf.clip_by_value(p, 0.0, 1.0 - 1e-6)
+            surv = tf.math.cumprod(1.0 - p, axis=1, exclusive=True)
+            s = p * surv
+            expect_next = tf.reduce_sum(s * q_next_on_slate, axis=-1)
 
             r_scaled = reward_t / self._reward_scale
             y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * expect_next)
