@@ -1,0 +1,9 @@
+{"episode": 0, "total_reward": 1431.354248046875, "loss": 0.0, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0, "epsilon": 0.1992313712835312}
+{"episode": 1, "total_reward": 1396.8231201171875, "loss": 0.0, "ndcg@5": 0.0, "slate_mrr": 0.019999999552965164, "click_rate": 1.0, "epsilon": 0.19846569001674652}
+{"episode": 2, "total_reward": 1608.0228271484375, "loss": 0.1138354641671228, "ndcg@5": 0.019999999552965164, "slate_mrr": 0.019999999552965164, "click_rate": 1.0, "epsilon": 0.19770294427871704}
+{"episode": 3, "total_reward": 1714.794677734375, "loss": 0.01457894238526933, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0, "epsilon": 0.19694313406944275}
+{"episode": 4, "total_reward": 1972.00244140625, "loss": 0.007083968864753843, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0, "epsilon": 0.19618622958660126}
+{"episode": 5, "total_reward": 2246.76708984375, "loss": 0.006890358254313469, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0, "epsilon": 0.19543223083019257}
+{"episode": 6, "total_reward": 1215.416748046875, "loss": 0.00730836307280697, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0, "epsilon": 0.19468121230602264}
+{"episode": 7, "total_reward": 2391.194580078125, "loss": 0.007757288170978427, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 0.9, "epsilon": 0.19393308460712433}
+{"episode": 8, "total_reward": 1984.8101806640625, "loss": 0.007855307722929866, "ndcg@5": 0.0, "slate_mrr": 0.0, "click_rate": 1.0, "epsilon": 0.19318783283233643}
