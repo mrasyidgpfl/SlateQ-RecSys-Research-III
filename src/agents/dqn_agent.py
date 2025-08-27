@@ -47,22 +47,35 @@ class DQNNetwork(network.Network):
 
 
 class DQNGreedyPolicy(tf_policy.TFPolicy):
-    """Greedy policy over per-item Q-values; supports both scalar and slate actions."""
-    def __init__(self, time_step_spec, action_spec, q_network):
+    """Greedy policy; for slates ranks by v(s,i) * Q(s,i), else argmax Q."""
+    def __init__(self, time_step_spec, action_spec, q_network, beta: float = 5.0):
         super().__init__(time_step_spec, action_spec)
         self._q_network = q_network
         self._is_slate = (len(action_spec.shape) == 1)
         self._slate_size = int(action_spec.shape[0]) if self._is_slate else 1
+        self._beta = float(beta)
 
     def _distribution(self, time_step, policy_state):
         obs = time_step.observation
         q_values, _ = self._q_network(obs, time_step.step_type)
 
         if self._is_slate:
-            topk = tf.math.top_k(q_values, k=self._slate_size)
-            loc = topk.indices
+            interest = tf.convert_to_tensor(obs["interest"], dtype=tf.float32)
+            item_feats = tf.convert_to_tensor(obs["item_features"], dtype=tf.float32)
+            rank = tf.rank(item_feats)
+            item_feats = tf.case(
+                [
+                    (tf.equal(rank, 4), lambda: item_feats[:, 0]),
+                    (tf.equal(rank, 2), lambda: tf.tile(tf.expand_dims(item_feats, 0), [tf.shape(interest)[0], 1, 1]))
+                ],
+                default=lambda: item_feats
+            )
+            v_all = tf.einsum("bt,bnt->bn", interest, item_feats)
+            score = v_all * q_values
+            topk = tf.math.top_k(score, k=self._slate_size)
+            loc = tf.cast(topk.indices, self._action_spec.dtype)
         else:
-            loc = tf.argmax(q_values, axis=-1, output_type=tf.int32)
+            loc = tf.cast(tf.argmax(q_values, axis=-1, output_type=tf.int32), self._action_spec.dtype)
 
         return tfp.distributions.Deterministic(loc=loc)
 
@@ -95,9 +108,10 @@ class DQNExplorationPolicy(tf_policy.TFPolicy):
         if self._is_slate:
             rand_scores = tf.random.uniform([batch, self._num_items], dtype=tf.float32, seed=seed)
             rand_act = tf.math.top_k(rand_scores, k=self._slate_size).indices
+            rand_act = tf.cast(rand_act, self._action_spec.dtype)
         else:
             rand_act = tf.random.uniform([batch], minval=0, maxval=self._num_items,
-                                         dtype=tf.int32, seed=seed)
+                                         dtype=self._action_spec.dtype, seed=seed)
 
         greedy_act = self._base.action(time_step).action
         explore = tf.less(tf.random.uniform([batch], dtype=tf.float32, seed=seed), self._epsilon)
@@ -118,8 +132,7 @@ class DQNExplorationPolicy(tf_policy.TFPolicy):
 
 class DQNAgent(tf_agent.TFAgent):
     """
-    Vanilla DQN agent over items.  
-    Supports both scalar and slate actions.
+    Vanilla DQN over items with Double-DQN targets; for slate actions uses cascade-matched expectation over next slate.
     """
     def __init__(self, time_step_spec, action_spec,
                  num_users=10, num_topics=10, num_items=100,
@@ -128,6 +141,8 @@ class DQNAgent(tf_agent.TFAgent):
                  target_update_period=1000,
                  tau=0.005,
                  gamma=0.95,
+                 beta=5.0,
+                 pos_weights=(1.0, 0.75, 0.55, 0.40, 0.30),
                  huber_delta=1.0,
                  grad_clip_norm=10.0,
                  reward_scale=10.0,
@@ -137,9 +152,24 @@ class DQNAgent(tf_agent.TFAgent):
         self._target_update_period = int(target_update_period)
         self._tau = float(tau)
         self._gamma = tf.constant(gamma, dtype=tf.float32)
+        self._beta = tf.constant(beta, dtype=tf.float32)
         self._grad_clip_norm = float(grad_clip_norm)
         self._reward_scale = float(reward_scale)
         self.is_learning = True
+
+        self._is_slate = (len(action_spec.shape) == 1)
+        self._slate_size = int(action_spec.shape[0]) if self._is_slate else 1
+
+        pw = tf.convert_to_tensor(pos_weights, dtype=tf.float32)
+        cur = tf.shape(pw)[0]
+        def pad():
+            pad_len = self._slate_size - cur
+            last = pw[-1]
+            return tf.concat([pw, tf.fill([pad_len], last)], axis=0)
+        def trunc():
+            return pw[:self._slate_size]
+        pw = tf.cond(cur < self._slate_size, pad, trunc)
+        self._pos_w = tf.reshape(pw, [1, self._slate_size])
 
         input_tensor_spec = time_step_spec.observation['interest']
         self._q_net = DQNNetwork(input_tensor_spec, num_items, l2=l2)
@@ -155,7 +185,7 @@ class DQNAgent(tf_agent.TFAgent):
         self._huber = tf.keras.losses.Huber(delta=huber_delta,
                                             reduction=tf.keras.losses.Reduction.NONE)
 
-        base = DQNGreedyPolicy(time_step_spec, action_spec, self._q_net)
+        base = DQNGreedyPolicy(time_step_spec, action_spec, self._q_net, beta=float(self._beta.numpy()) if hasattr(self._beta, "numpy") else self._beta)
         self._policy = base
         self._collect_policy = DQNExplorationPolicy(
             base_policy=base,
@@ -197,17 +227,14 @@ class DQNAgent(tf_agent.TFAgent):
             x = tf.convert_to_tensor(x)
             shape = tf.shape(x)
             rank = tf.rank(x)
-
             def flatten_all():
                 return tf.reshape(x, [-1])
-
             def flatten_keep():
                 if tail_ndims == 0:
                     return tf.reshape(x, [-1])
                 lead = tf.reduce_prod(shape[:-tail_ndims])
                 tail = shape[-tail_ndims:]
                 return tf.reshape(x, tf.concat([[lead], tail], axis=0))
-
             return tf.cond(tf.less(rank, tail_ndims), flatten_all, flatten_keep)
 
         obs_t_interest    = slice_time(experience.observation['interest'], 0)
@@ -215,11 +242,14 @@ class DQNAgent(tf_agent.TFAgent):
         click_pos_t       = slice_time(experience.observation['choice'], 1)
 
         item_feats_tp1_any = slice_time(experience.observation['item_features'], 1)
-        item_feats_rank = tf.rank(item_feats_tp1_any)
-        _ = tf.case([
-            (tf.equal(item_feats_rank, 4), lambda: item_feats_tp1_any[0, 0]),
-            (tf.equal(item_feats_rank, 3), lambda: item_feats_tp1_any[0]),
-        ], default=lambda: item_feats_tp1_any)
+        rank = tf.rank(item_feats_tp1_any)
+        def as_NT(): return item_feats_tp1_any
+        def squeeze_UNT(): return item_feats_tp1_any[0]
+        def squeeze_BUNT(): return item_feats_tp1_any[0, 0]
+        item_feats_NT = tf.case([
+            (tf.equal(rank, 4), squeeze_BUNT),
+            (tf.equal(rank, 3), squeeze_UNT),
+        ], default=as_NT)
 
         act = experience.action
         act_rank = tf.rank(act)
@@ -247,15 +277,35 @@ class DQNAgent(tf_agent.TFAgent):
         idx = tf.stack([tf.range(batch_size), safe_click_pos], axis=1)
         clicked_item_id = tf.gather_nd(action_t, idx)
 
+        BU = tf.shape(obs_tp1['interest'])[0]
+        item_feats_BUNT = tf.tile(tf.expand_dims(item_feats_NT, 0), [BU, 1, 1])
+
         with tf.GradientTape() as tape:
             q_tm1_all, _ = self._q_net(obs_t, training=True)
             q_clicked = tf.gather(q_tm1_all, clicked_item_id, axis=1, batch_dims=1)
 
-            q_tp1_all, _ = self._tgt_net(obs_tp1, training=False)
-            q_next_max = tf.reduce_max(q_tp1_all, axis=-1)
+            q_tp1_online_all, _ = self._q_net(obs_tp1, training=False)
+            q_tp1_target_all, _ = self._tgt_net(obs_tp1, training=False)
+
+            if self._slate_size > 1:
+                v_all = tf.einsum("bt,bnt->bn", obs_tp1['interest'], item_feats_BUNT)
+                score_next = v_all * q_tp1_online_all
+                next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices
+                q_next_on_slate = tf.gather(q_tp1_target_all, next_topk_idx, axis=1, batch_dims=1)
+                v_next_on_slate = tf.gather(v_all, next_topk_idx, axis=1, batch_dims=1)
+                p = tf.nn.sigmoid(self._beta * v_next_on_slate)
+                p = tf.clip_by_value(p, 0.0, 1.0 - 1e-6)
+                p = p * self._pos_w
+                p = tf.clip_by_value(p, 0.0, 1.0 - 1e-6)
+                surv = tf.math.cumprod(1.0 - p, axis=1, exclusive=True)
+                s = p * surv
+                q_next = tf.reduce_sum(s * q_next_on_slate, axis=-1)
+            else:
+                a_star = tf.argmax(q_tp1_online_all, axis=-1, output_type=tf.int32)
+                q_next = tf.gather(q_tp1_target_all, a_star[:, None], axis=1, batch_dims=1)[:, 0]
 
             r_scaled = reward_t / self._reward_scale
-            y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * q_next_max)
+            y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * q_next)
 
             per_ex = self._huber(y, q_clicked)
             per_ex = per_ex * tf.cast(clicked_mask, tf.float32)
