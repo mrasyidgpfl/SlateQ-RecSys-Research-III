@@ -139,9 +139,6 @@ def make_slateq_noisynet(time_step_spec, action_spec, **kwargs):
         slate_size=kwargs.get("slate_size"),
         num_items=kwargs.get("num_items"),
         learning_rate=kwargs.get("learning_rate", 1e-3),
-        epsilon=kwargs.get("epsilon", 0.1),
-        min_epsilon=kwargs.get("min_epsilon", 0.05),
-        epsilon_decay_steps=kwargs.get("epsilon_decay_steps", int(0.6 * kwargs.get("episodes", 600) * kwargs.get("steps", 200))),
         target_update_period=kwargs.get("target_update_period", 1000),
         tau=kwargs.get("tau", 0.005),
         gamma=kwargs.get("gamma", 0.95),
@@ -149,11 +146,12 @@ def make_slateq_noisynet(time_step_spec, action_spec, **kwargs):
         huber_delta=kwargs.get("huber_delta", 1.0),
         grad_clip_norm=kwargs.get("grad_clip_norm", 10.0),
         reward_scale=kwargs.get("reward_scale", 10.0),
-        l2=kwargs.get("l2", 0.0),
         pos_weights=kwargs.get("pos_weights", None),
-        # Noisy layers
-        noisy_std_init=kwargs.get("noisy_std_init", 0.5),
-        reset_noise_every=kwargs.get("reset_noise_every", 1),
+        # Noisy layers (map alias)
+        noisy_sigma0=kwargs.get("noisy_std_init", 0.5),
+        # Optional toggles
+        noisy_eval_collect=kwargs.get("noisy_eval_collect", True),
+        noisy_eval_eval=kwargs.get("noisy_eval_eval", True),
     )
 
 @register("dqn")
@@ -163,12 +161,14 @@ def make_dqn(time_step_spec, action_spec, **kwargs):
         action_spec=action_spec,
         num_users=kwargs.get("num_users"),
         num_topics=kwargs.get("num_topics", 10),
-        slate_size=kwargs.get("slate_size"),
         num_items=kwargs.get("num_items"),
         learning_rate=kwargs.get("learning_rate", 1e-3),
         epsilon=kwargs.get("epsilon", 0.2),
         min_epsilon=kwargs.get("min_epsilon", 0.05),
-        epsilon_decay_steps=kwargs.get("epsilon_decay_steps", int(0.6 * kwargs.get("episodes", 600) * kwargs.get("steps", 200))),
+        epsilon_decay_steps=kwargs.get(
+            "epsilon_decay_steps",
+            int(0.6 * kwargs.get("episodes", 600) * kwargs.get("steps", 200)),
+        ),
         target_update_period=kwargs.get("target_update_period", 1000),
         tau=kwargs.get("tau", 0.005),
         gamma=kwargs.get("gamma", 0.95),
