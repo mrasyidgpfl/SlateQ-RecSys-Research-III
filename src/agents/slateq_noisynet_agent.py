@@ -7,11 +7,9 @@ from tf_agents.trajectories import policy_step, trajectory as trajectory_lib
 from tf_agents.policies import tf_policy
 
 
-# NoisyNet building blocks
+# Factorized Gaussian NoisyNet dense layer
 class NoisyDense(tf.keras.layers.Layer):
-    """
-    Factorized Gaussian NoisyNet layer (Fortunato et al., 2018).
-    """
+    """Factorized Gaussian NoisyNet layer (Fortunato et al., 2018)."""
     def __init__(self, units, activation=None, sigma0=0.5, use_bias=True, name=None):
         super().__init__(name=name)
         self.units = int(units)
@@ -62,10 +60,7 @@ class NoisyDense(tf.keras.layers.Layer):
                 self.reset_noise()
             noise_w = tf.einsum('i,j->ij', self._eps_in, self._eps_out)
             w = self.w_mu + self.w_sigma * noise_w
-            if self.use_bias:
-                b = self.b_mu + self.b_sigma * self._eps_out
-            else:
-                b = None
+            b = self.b_mu + self.b_sigma * self._eps_out if self.use_bias else None
         else:
             w = self.w_mu
             b = self.b_mu if self.use_bias else None
@@ -78,7 +73,7 @@ class NoisyDense(tf.keras.layers.Layer):
         return y
 
 
-# Per-item Q network (Noisy)
+# Per-item Q network with NoisyNet layers
 class NoisySlateQNetwork(network.Network):
     def __init__(self,
                  input_tensor_spec,
@@ -147,15 +142,11 @@ class NoisySlateQPolicy(tf_policy.TFPolicy):
         return policy_step.PolicyStep(action=action, state=policy_state)
 
 
-# SlateQ with NoisyNet Agent
+# SlateQ with NoisyNet Agent (uses static item features during training)
 class SlateQNoisyNetAgent(tf_agent.TFAgent):
     """
-    SlateQ with NoisyNet exploration:
-      - No epsilon. Exploration arises from learned weight noise.
-      - Double-Q target: argmax via online net. Target evaluated via target net.
-      - Next-slate expectation uses v(s,i) and position weights (cascade alignment).
-      - Soft target updates (tau) or hard copies by period.
-      - Huber loss, gradient clipping, reward scaling.
+    SlateQ with NoisyNet exploration and Double-Q targets.
+    Uses a static item_features tensor provided externally to avoid storing it in replay.
     """
     def __init__(self, time_step_spec, action_spec,
                  num_users=10, num_topics=10, slate_size=5, num_items=100,
@@ -181,6 +172,8 @@ class SlateQNoisyNetAgent(tf_agent.TFAgent):
         self._grad_clip_norm = float(grad_clip_norm)
         self._reward_scale = float(reward_scale)
         self.is_learning = True
+
+        self._static_item_features = None
 
         if pos_weights is None:
             pw = tf.linspace(1.0, 0.3, self._slate_size)
@@ -237,6 +230,11 @@ class SlateQNoisyNetAgent(tf_agent.TFAgent):
             train_step_counter=self._train_step_counter
         )
 
+    # Provide static item features once from the environment
+    def set_static_item_features(self, item_features):
+        x = tf.convert_to_tensor(item_features, dtype=tf.float32)
+        self._static_item_features = x
+
     @property
     def collect_data_spec(self):
         return trajectory_lib.Trajectory(
@@ -277,12 +275,14 @@ class SlateQNoisyNetAgent(tf_agent.TFAgent):
         obs_tp1_interest  = slice_time(experience.observation['interest'], 1)
         click_pos_t       = slice_time(experience.observation['choice'], 1)
 
-        item_feats_tp1_any = slice_time(experience.observation['item_features'], 1)
-        item_feats_rank = tf.rank(item_feats_tp1_any)
-        item_feats_tp1 = tf.case([
-            (tf.equal(item_feats_rank, 4), lambda: item_feats_tp1_any[0, 0]),
-            (tf.equal(item_feats_rank, 3), lambda: item_feats_tp1_any[0]),
-        ], default=lambda: item_feats_tp1_any)
+        if self._static_item_features is None:
+            raise ValueError("Static item features not set. Call set_static_item_features() before training.")
+        item_feats = self._static_item_features
+        if tf.rank(item_feats) == 2:
+            batch = tf.shape(obs_tp1_interest)[0]
+            item_feats_tp1 = tf.tile(item_feats[None, ...], [batch, 1, 1])
+        else:
+            item_feats_tp1 = item_feats
 
         act = experience.action
         act_rank = tf.rank(act)
@@ -321,7 +321,9 @@ class SlateQNoisyNetAgent(tf_agent.TFAgent):
                 self._q_network.reset_noise()
             q_tp1_online_all, _ = self._q_network(obs_tp1, training=True)
 
-            v_all = tf.linalg.matmul(obs_tp1['interest'], item_feats_tp1, transpose_b=True)
+            # FIX: use einsum to get [B, N] instead of a mis-shaped matmul
+            v_all = tf.einsum("bt,bnt->bn", obs_tp1['interest'], item_feats_tp1)
+
             score_next = v_all * q_tp1_online_all
             next_topk = tf.math.top_k(score_next, k=self._slate_size)
             next_topk_idx = next_topk.indices
