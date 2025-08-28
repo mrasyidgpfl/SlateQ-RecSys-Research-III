@@ -8,24 +8,11 @@ from tf_agents.policies import tf_policy
 
 
 class DuelingSlateQNetwork(network.Network):
-    """
-    Maps observation['interest'] (shape [B, T]) to per-item Q-values [B, N]
-    using a duelling head: Q(i) = V + (A(i) - mean(A)).
-    """
-    def __init__(
-        self,
-        input_tensor_spec,
-        num_items: int,
-        hidden=(256, 128, 64),
-        l2=0.0,
-        name="DuelingSlateQNetwork",
-    ):
-        super().__init__(input_tensor_spec={"interest": input_tensor_spec},
-                         state_spec=(),
-                         name=name)
+    """Maps observation['interest'] (shape [B, T]) to per-item Q-values [B, N] using a duelling head: Q(i) = V + (A(i) - mean(A))."""
+    def __init__(self, input_tensor_spec, num_items: int, hidden=(256, 128, 64), l2=0.0, name="DuelingSlateQNetwork"):
+        super().__init__(input_tensor_spec={"interest": input_tensor_spec}, state_spec=(), name=name)
         self._num_items = int(num_items)
         reg = tf.keras.regularizers.l2(l2) if (l2 and l2 > 0) else None
-
         trunk = []
         for h in hidden:
             trunk.append(tf.keras.layers.Dense(
@@ -34,14 +21,8 @@ class DuelingSlateQNetwork(network.Network):
                 kernel_regularizer=reg
             ))
         self._trunk = tf.keras.Sequential(trunk, name=f"{name}_trunk")
-
-        self._value = tf.keras.layers.Dense(
-            1, activation=None, kernel_regularizer=reg, name=f"{name}_value"
-        )
-
-        self._advantage = tf.keras.layers.Dense(
-            self._num_items, activation=None, kernel_regularizer=reg, name=f"{name}_advantage"
-        )
+        self._value = tf.keras.layers.Dense(1, activation=None, kernel_regularizer=reg, name=f"{name}_value")
+        self._advantage = tf.keras.layers.Dense(self._num_items, activation=None, kernel_regularizer=reg, name=f"{name}_advantage")
 
     def call(self, inputs, step_type=(), network_state=(), training=False):
         x = tf.convert_to_tensor(inputs["interest"])
@@ -54,9 +35,7 @@ class DuelingSlateQNetwork(network.Network):
 
 
 class SlateQPolicy(tf_policy.TFPolicy):
-    """
-    Greedy top-k slate by ranking v(s,i) * Q(s,i), where v is the user–item affinity.
-    """
+    """Greedy top-k slate by ranking v(s,i) * Q(s,i), where v is the user–item affinity."""
     def __init__(self, time_step_spec, action_spec, q_network, slate_size: int, beta: float = 5.0):
         super().__init__(time_step_spec, action_spec)
         self._q_network = q_network
@@ -69,7 +48,6 @@ class SlateQPolicy(tf_policy.TFPolicy):
 
         interest   = tf.convert_to_tensor(obs["interest"])
         item_feats = tf.convert_to_tensor(obs["item_features"])
-
         item_feats = tf.cond(
             tf.equal(tf.rank(item_feats), 2),
             lambda: tf.tile(tf.expand_dims(item_feats, 0), [tf.shape(interest)[0], 1, 1]),
@@ -87,23 +65,13 @@ class SlateQPolicy(tf_policy.TFPolicy):
 
 
 class SlateQExplorationPolicy(tf_policy.TFPolicy):
-    """
-    Epsilon-greedy wrapper around a greedy slate policy with exponential decay.
-    """
-    def __init__(
-        self,
-        base_policy: SlateQPolicy,
-        num_items: int,
-        slate_size: int,
-        epsilon: float = 0.2,
-        steps_to_min: int = 20_000,
-        min_epsilon: float = 0.05,
-    ):
+    """Epsilon-greedy wrapper around a greedy slate policy with exponential decay."""
+    def __init__(self, base_policy: SlateQPolicy, num_items: int, slate_size: int,
+                 epsilon: float = 0.2, steps_to_min: int = 20_000, min_epsilon: float = 0.05):
         super().__init__(base_policy.time_step_spec, base_policy.action_spec)
         self._base_policy = base_policy
         self._num_items = int(num_items)
         self._slate_size = int(slate_size)
-
         self._epsilon = tf.Variable(float(epsilon), trainable=False, dtype=tf.float32)
         decay = (float(min_epsilon) / float(epsilon)) ** (1.0 / float(steps_to_min))
         self._epsilon_decay = tf.constant(decay, dtype=tf.float32)
@@ -111,18 +79,11 @@ class SlateQExplorationPolicy(tf_policy.TFPolicy):
 
     def _action(self, time_step, policy_state=(), seed=None):
         batch_size = tf.shape(time_step.observation["interest"])[0]
-
         rand_scores = tf.random.uniform([batch_size, self._num_items], dtype=tf.float32, seed=seed)
         random_slate = tf.math.top_k(rand_scores, k=self._slate_size).indices
-
         greedy_slate = self._base_policy.action(time_step).action
-
-        explore_mask = tf.less(
-            tf.random.uniform([batch_size], dtype=tf.float32, seed=seed),
-            self._epsilon
-        )
+        explore_mask = tf.less(tf.random.uniform([batch_size], dtype=tf.float32, seed=seed), self._epsilon)
         explore_mask = tf.expand_dims(explore_mask, 1)
-
         action = tf.where(explore_mask, random_slate, greedy_slate)
         return policy_step.PolicyStep(action=action, state=policy_state)
 
@@ -138,26 +99,14 @@ class SlateQExplorationPolicy(tf_policy.TFPolicy):
 
 
 class SlateQDuelingAgent(tf_agent.TFAgent):
-    """
-    Dueling SlateQ with: duelling head, click masking, expected next-slate target
-    with position bias, Double Q, soft or periodic hard target updates, Huber loss,
-    gradient clipping, and reward scaling.
-    """
-    def __init__(
-        self, time_step_spec, action_spec,
-        num_users=10, num_topics=10, slate_size=5, num_items=100,
-        learning_rate=1e-3,
-        epsilon=0.2, min_epsilon=0.05, epsilon_decay_steps=20_000,
-        target_update_period=1000,
-        tau=0.005,
-        gamma=0.95,
-        beta=5.0,
-        huber_delta=1.0,
-        grad_clip_norm=10.0,
-        reward_scale=10.0,
-        l2=0.0,
-        pos_weights=None,
-    ):
+    """Dueling SlateQ with expected next-slate value (position bias), Double-Q target, Huber loss, grad clipping, reward scaling, and epsilon-greedy collection."""
+    def __init__(self, time_step_spec, action_spec,
+                 num_users=10, num_topics=10, slate_size=5, num_items=100,
+                 learning_rate=1e-3,
+                 epsilon=0.2, min_epsilon=0.05, epsilon_decay_steps=20_000,
+                 target_update_period=1000, tau=0.005, gamma=0.95, beta=5.0,
+                 huber_delta=1.0, grad_clip_norm=10.0, reward_scale=10.0,
+                 l2=0.0, pos_weights=None):
         self._train_step_counter = tf.Variable(0)
         self._num_items = int(num_items)
         self._slate_size = int(slate_size)
@@ -174,20 +123,16 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
         else:
             pw = tf.convert_to_tensor(pos_weights, dtype=tf.float32)
             cur = tf.shape(pw)[0]
-
             def pad():
                 pad_len = self._slate_size - cur
                 last = pw[-1]
                 return tf.concat([pw, tf.fill([pad_len], last)], axis=0)
-
             def trunc():
                 return pw[:self._slate_size]
-
             pw = tf.cond(cur < self._slate_size, pad, trunc)
         self._pos_w = tf.reshape(pw, [1, self._slate_size])
 
         input_tensor_spec = time_step_spec.observation["interest"]
-
         self._q_network = DuelingSlateQNetwork(input_tensor_spec, num_items, l2=l2)
         self._target_q_network = DuelingSlateQNetwork(input_tensor_spec, num_items, l2=l2)
 
@@ -198,8 +143,7 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
         self._target_q_network.set_weights(self._q_network.get_weights())
 
         self._optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-        self._huber = tf.keras.losses.Huber(delta=huber_delta,
-                                            reduction=tf.keras.losses.Reduction.NONE)
+        self._huber = tf.keras.losses.Huber(delta=huber_delta, reduction=tf.keras.losses.Reduction.NONE)
 
         base_policy = SlateQPolicy(
             time_step_spec=time_step_spec,
@@ -250,54 +194,70 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
             x = tf.convert_to_tensor(x)
             shape = tf.shape(x)
             rank = tf.rank(x)
-
             def flatten_all():
                 return tf.reshape(x, [-1])
-
             def flatten_keep():
                 if tail_ndims == 0:
                     return tf.reshape(x, [-1])
                 lead = tf.reduce_prod(shape[:-tail_ndims])
                 tail = shape[-tail_ndims:]
                 return tf.reshape(x, tf.concat([[lead], tail], axis=0))
-
             return tf.cond(tf.less(rank, tail_ndims), flatten_all, flatten_keep)
 
-        obs_t_interest    = slice_time(experience.observation["interest"], 0)
-        obs_tp1_interest  = slice_time(experience.observation["interest"], 1)
-        click_pos_t       = slice_time(experience.observation["choice"], 1)
+        def align_leading(x, B):
+            x = tf.convert_to_tensor(x)
+            xB = tf.shape(x)[0]
+            def same():
+                return x
+            def repeat_or_trunc():
+                idx = tf.math.mod(tf.range(B), xB)
+                return tf.gather(x, idx, axis=0)
+            return tf.cond(tf.equal(xB, B), same, repeat_or_trunc)
+
+        interest_t_flat   = flatten_keep_tail(slice_time(experience.observation["interest"], 0), tail_ndims=1)
+        interest_tp1_flat = flatten_keep_tail(slice_time(experience.observation["interest"], 1), tail_ndims=1)
+        B = tf.shape(interest_tp1_flat)[0]
+        T = tf.shape(interest_tp1_flat)[1]
+        N = tf.constant(self._num_items, dtype=tf.int32)
+
+        obs_t   = {"interest": align_leading(interest_t_flat, B)}
+        obs_tp1 = {"interest": align_leading(interest_tp1_flat, B)}
+
+        act_t_any = slice_time(experience.action, 0)
+        action_flat = flatten_keep_tail(act_t_any, tail_ndims=1)
+        action_t = align_leading(action_flat, B)
+
+        click_pos_any = slice_time(experience.observation["choice"], 1)
+        click_pos_flat = flatten_keep_tail(click_pos_any, tail_ndims=0)
+        click_pos_t = tf.cast(align_leading(click_pos_flat, B), tf.int32)
 
         item_feats_tp1_any = slice_time(experience.observation["item_features"], 1)
-        item_feats_rank = tf.rank(item_feats_tp1_any)
-        item_feats_tp1 = tf.case([
-            (tf.equal(item_feats_rank, 4), lambda: item_feats_tp1_any[0, 0]),
-            (tf.equal(item_feats_rank, 3), lambda: item_feats_tp1_any[0]),
-        ], default=lambda: item_feats_tp1_any)
-
-        act = experience.action
-        act_rank = tf.rank(act)
-        action_t = tf.cond(
-            tf.greater_equal(act_rank, 2),
-            lambda: act[:, 0],
-            lambda: act
+        r = tf.rank(item_feats_tp1_any)
+        def as_BNT_from4():
+            x = flatten_keep_tail(item_feats_tp1_any, tail_ndims=2)
+            return align_leading(x, B)
+        def as_BNT_from3():
+            x = flatten_keep_tail(item_feats_tp1_any, tail_ndims=2)
+            return align_leading(x, B)
+        def as_BNT_from2():
+            x = tf.expand_dims(item_feats_tp1_any, 0)
+            return tf.tile(x, [B, 1, 1])
+        item_feats_tp1 = tf.case(
+            [
+                (tf.equal(r, 4), as_BNT_from4),
+                (tf.equal(r, 3), as_BNT_from3),
+            ],
+            default=as_BNT_from2
         )
-
-        reward_t      = slice_time(experience.reward, 1)
-        discount_tp1  = tf.cast(slice_time(experience.discount, 1), tf.float32)
-
-        obs_t   = {"interest": flatten_keep_tail(obs_t_interest,   tail_ndims=1)}
-        obs_tp1 = {"interest": flatten_keep_tail(obs_tp1_interest, tail_ndims=1)}
-        action_t     = flatten_keep_tail(action_t,     tail_ndims=1)
-        click_pos_t  = tf.cast(flatten_keep_tail(click_pos_t,  tail_ndims=0), tf.int32)
-        reward_t     = flatten_keep_tail(reward_t,     tail_ndims=0)
-        discount_tp1 = flatten_keep_tail(discount_tp1, tail_ndims=0)
+        item_feats_tp1 = tf.reshape(item_feats_tp1, [B, N, T])
 
         batch_size = tf.shape(action_t)[0]
         slate_size = tf.shape(action_t)[1]
 
         clicked_mask = tf.less(click_pos_t, slate_size)
         safe_click_pos = tf.minimum(click_pos_t, slate_size - 1)
-        idx = tf.stack([tf.range(batch_size), safe_click_pos], axis=1)
+        row_idx = tf.range(batch_size, dtype=tf.int32)
+        idx = tf.stack([row_idx, safe_click_pos], axis=1)
         clicked_item_id = tf.gather_nd(action_t, idx)
 
         with tf.GradientTape() as tape:
@@ -305,9 +265,9 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
             q_clicked = tf.gather(q_tm1_all, clicked_item_id, axis=1, batch_dims=1)
 
             q_tp1_online_all, _ = self._q_network(obs_tp1, training=False)
-
-            v_all = tf.linalg.matmul(obs_tp1["interest"], item_feats_tp1, transpose_b=True)
+            v_all = tf.einsum("bt,bnt->bn", obs_tp1["interest"], item_feats_tp1)
             score_next = v_all * q_tp1_online_all
+
             next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices
 
             q_tp1_target_all, _ = self._target_q_network(obs_tp1, training=False)
@@ -320,7 +280,13 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
 
             expect_next = tf.reduce_sum(p_next * q_next_on_slate, axis=-1)
 
-            r_scaled = reward_t / self._reward_scale
+            reward_t_any = slice_time(experience.reward, 1)
+            discount_tp1_any = tf.cast(slice_time(experience.discount, 1), tf.float32)
+            reward_flat = flatten_keep_tail(reward_t_any, tail_ndims=0)
+            discount_flat = flatten_keep_tail(discount_tp1_any, tail_ndims=0)
+            r_scaled = align_leading(reward_flat, B) / self._reward_scale
+            discount_tp1 = align_leading(discount_flat, B)
+
             y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * expect_next)
 
             per_example = self._huber(y, q_clicked)

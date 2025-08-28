@@ -39,7 +39,6 @@ import tensorflow as tf
 np.random.seed(1337)
 tf.random.set_seed(1337)
 
-# >>> Run TF functions eagerly to avoid graph buildup <<<
 try:
     tf.config.run_functions_eagerly(True)
 except Exception:
