@@ -129,7 +129,7 @@ def make_slateq_dueling(time_step_spec, action_spec, **kwargs):
         beta=kwargs.get("beta", 5.0),
     )
 
-@register("slateq_noisynet")
+@register("slateqnoisynet")
 def make_slateq_noisynet(time_step_spec, action_spec, **kwargs):
     return SlateQNoisyNetAgent(
         time_step_spec=time_step_spec,

@@ -7,6 +7,7 @@ from tf_agents.trajectories import policy_step, trajectory as trajectory_lib
 from tf_agents.policies import tf_policy
 
 
+# NoisyNet building blocks
 class NoisyDense(tf.keras.layers.Layer):
     """
     Factorized Gaussian NoisyNet layer (Fortunato et al., 2018).
@@ -77,10 +78,8 @@ class NoisyDense(tf.keras.layers.Layer):
         return y
 
 
+# Per-item Q network (Noisy)
 class NoisySlateQNetwork(network.Network):
-    """
-    Per-item Q network with NoisyNet layers.
-    """
     def __init__(self,
                  input_tensor_spec,
                  num_items: int,
@@ -113,10 +112,8 @@ class NoisySlateQNetwork(network.Network):
         return q_values, network_state
 
 
+# Deterministic top-K policy (exploration via noisy weights)
 class NoisySlateQPolicy(tf_policy.TFPolicy):
-    """
-    Deterministic top-K slate; exploration arises from noisy weights.
-    """
     def __init__(self, time_step_spec, action_spec, q_network, slate_size: int, beta: float = 5.0, noisy_eval: bool = True):
         super().__init__(time_step_spec, action_spec)
         self._q_network = q_network
@@ -150,9 +147,15 @@ class NoisySlateQPolicy(tf_policy.TFPolicy):
         return policy_step.PolicyStep(action=action, state=policy_state)
 
 
+# SlateQ with NoisyNet Agent
 class SlateQNoisyNetAgent(tf_agent.TFAgent):
     """
-    SlateQ with NoisyNet exploration and env-matched cascade target.
+    SlateQ with NoisyNet exploration:
+      - No epsilon. Exploration arises from learned weight noise.
+      - Double-Q target: argmax via online net. Target evaluated via target net.
+      - Next-slate expectation uses v(s,i) and position weights (cascade alignment).
+      - Soft target updates (tau) or hard copies by period.
+      - Huber loss, gradient clipping, reward scaling.
     """
     def __init__(self, time_step_spec, action_spec,
                  num_users=10, num_topics=10, slate_size=5, num_items=100,
@@ -275,24 +278,11 @@ class SlateQNoisyNetAgent(tf_agent.TFAgent):
         click_pos_t       = slice_time(experience.observation['choice'], 1)
 
         item_feats_tp1_any = slice_time(experience.observation['item_features'], 1)
-        rank = tf.rank(item_feats_tp1_any)
-
-        def as_NT():
-            return item_feats_tp1_any
-
-        def squeeze_UNT():
-            return item_feats_tp1_any[0]
-
-        def squeeze_BUNT():
-            return item_feats_tp1_any[0, 0]
-
-        item_feats_NT = tf.case([
-            (tf.equal(rank, 4), squeeze_BUNT),
-            (tf.equal(rank, 3), squeeze_UNT),
-        ], default=as_NT)
-
-        BU = tf.shape(obs_tp1_interest)[0]
-        item_feats_BUNT = tf.tile(tf.expand_dims(item_feats_NT, 0), [BU, 1, 1])
+        item_feats_rank = tf.rank(item_feats_tp1_any)
+        item_feats_tp1 = tf.case([
+            (tf.equal(item_feats_rank, 4), lambda: item_feats_tp1_any[0, 0]),
+            (tf.equal(item_feats_rank, 3), lambda: item_feats_tp1_any[0]),
+        ], default=lambda: item_feats_tp1_any)
 
         act = experience.action
         act_rank = tf.rank(act)
@@ -323,28 +313,28 @@ class SlateQNoisyNetAgent(tf_agent.TFAgent):
         with tf.GradientTape() as tape:
             if hasattr(self._q_network, "reset_noise"):
                 self._q_network.reset_noise()
+
             q_tm1_all, _ = self._q_network(obs_t, training=True)
             q_clicked = tf.gather(q_tm1_all, clicked_item_id, axis=1, batch_dims=1)
 
             if hasattr(self._q_network, "reset_noise"):
                 self._q_network.reset_noise()
-            q_tp1_online_all, _ = self._q_network(obs_tp1, training=False)
+            q_tp1_online_all, _ = self._q_network(obs_tp1, training=True)
 
-            v_all = tf.einsum("bt,bnt->bn", obs_tp1['interest'], item_feats_BUNT)
+            v_all = tf.linalg.matmul(obs_tp1['interest'], item_feats_tp1, transpose_b=True)
             score_next = v_all * q_tp1_online_all
-            next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices
+            next_topk = tf.math.top_k(score_next, k=self._slate_size)
+            next_topk_idx = next_topk.indices
 
             q_tp1_target_all, _ = self._target_q_network(obs_tp1, training=False)
             q_next_on_slate = tf.gather(q_tp1_target_all, next_topk_idx, axis=1, batch_dims=1)
 
             v_next_on_slate = tf.gather(v_all, next_topk_idx, axis=1, batch_dims=1)
-            p = tf.nn.sigmoid(self._beta * v_next_on_slate)
-            p = tf.clip_by_value(p, 0.0, 1.0 - 1e-6)
-            p = p * self._pos_w
-            p = tf.clip_by_value(p, 0.0, 1.0 - 1e-6)
-            surv = tf.math.cumprod(1.0 - p, axis=1, exclusive=True)
-            s = p * surv
-            expect_next = tf.reduce_sum(s * q_next_on_slate, axis=-1)
+            p_next = tf.nn.softmax(self._beta * v_next_on_slate, axis=-1)
+            p_next = p_next * self._pos_w
+            p_next = p_next / (tf.reduce_sum(p_next, axis=-1, keepdims=True) + 1e-8)
+
+            expect_next = tf.reduce_sum(p_next * q_next_on_slate, axis=-1)
 
             r_scaled = reward_t / self._reward_scale
             y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * expect_next)
