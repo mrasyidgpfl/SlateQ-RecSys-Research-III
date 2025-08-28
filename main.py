@@ -270,6 +270,7 @@ def main(argv):
         epsilon_decay_steps=int(0.6 * num_episodes * steps_per_episode),
     )
 
+    # Show initial epsilon if the agent has it
     if getattr(agent, "is_learning", False) and hasattr(agent.collect_policy, "epsilon"):
         try:
             print(f"Init ε = {float(agent.collect_policy.epsilon):.3f}")
@@ -425,6 +426,14 @@ def main(argv):
                                 print(f"[Episode {episode}] Step {step} | Loss: {li:.4f}")
                             del experience
 
+                    # --- epsilon decay per env step (if the collect policy supports it) ---
+                    if hasattr(agent.collect_policy, "decay_epsilon"):
+                        try:
+                            agent.collect_policy.decay_epsilon(steps=1)
+                        except Exception:
+                            pass
+                    # ---------------------------------------------------------------------
+
                     time_step = next_time_step
                     del action_step, action, next_time_step  # free tensors sooner
 
@@ -443,6 +452,14 @@ def main(argv):
                 avg_loss = float(np.mean(episode_losses)) if episode_losses else 0.0
                 click_rate = float(np.mean(click_mask))
 
+                # read epsilon (if present) so it’s logged and plotted
+                eps_out = None
+                if is_learning and hasattr(agent.collect_policy, "epsilon"):
+                    try:
+                        eps_out = float(agent.collect_policy.epsilon)
+                    except Exception:
+                        eps_out = None
+
                 payload = {
                     "episode": int(episode),
                     "total_reward": float(episode_reward),
@@ -451,8 +468,15 @@ def main(argv):
                     "slate_mrr": float(mrr),
                     "click_rate": float(click_rate),
                 }
+                if eps_out is not None:
+                    payload["epsilon"] = eps_out
+
                 logger.log(payload)
-                print(f"[Episode {episode}] Total Reward: {episode_reward:.2f} | click_rate={click_rate:.3f}")
+
+                if eps_out is not None:
+                    print(f"[Episode {episode}] Total Reward: {episode_reward:.2f} | click_rate={click_rate:.3f} | ε={eps_out:.3f}")
+                else:
+                    print(f"[Episode {episode}] Total Reward: {episode_reward:.2f} | click_rate={click_rate:.3f}")
 
                 trim_memory()
                 if episode > 0 and episode % CLEAR_SESSION_EVERY == 0:
@@ -527,6 +551,7 @@ def main(argv):
                         plt.savefig(plots_dir / f"{run_name}_{filename}.png")
                         plt.close()
 
+                    # Reward / Loss
                     plot_with_avg(metrics_df, "total_reward",
                                   "Total Reward over Episodes", "Total Reward", "reward",
                                   main_color="#0C00AD", ma_color="#9ABDFF")
@@ -534,6 +559,7 @@ def main(argv):
                                   "Training Loss over Episodes", "Loss", "loss",
                                   main_color="#B59AFF", ma_color="#9ABDFF")
 
+                    # Ranking metrics
                     has_ndcg = "ndcg@5" in metrics_df and metrics_df["ndcg@5"].notnull().any()
                     has_mrr  = "slate_mrr" in metrics_df and metrics_df["slate_mrr"].notnull().any()
                     if has_ndcg or has_mrr:
@@ -565,6 +591,7 @@ def main(argv):
                         plt.savefig(plots_dir / f"{run_name}_ranking.png")
                         plt.close()
                 
+                    # Click & Epsilon
                     has_click = "click_rate" in metrics_df and metrics_df["click_rate"].notnull().any()
                     has_eps   = "epsilon" in metrics_df and metrics_df["epsilon"].notnull().any()
                     if has_click or has_eps:
