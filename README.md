@@ -96,8 +96,8 @@ Available agent names:
 - `greedy`
 - `ctxbandit`
 - `slateq`
-- `slateq_dueling`
-- `slateq_noisynet`
+- `slateqdueling`
+- `slateqnoisynet`
 - `dqn`
 
 ---
