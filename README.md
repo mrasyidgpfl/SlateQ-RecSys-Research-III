@@ -43,12 +43,11 @@ SlateQ-RecSys-Research/                 # Project root
 │           ├── metrics.csv             # Metrics logged in CSV
 │           └── metrics.jsonl           # Metrics logged in JSON Lines
 └── plots/                              # Auto-generated training plots
-    └── <agent_name>/                   # Separate folder for each agent
-        └── run_YYYY_MM_DD_HH_MM/       # Run-specific plots
-            ├── reward.png              # Reward vs episodes
-            ├── loss.png                # Loss vs episodes
-            ├── ranking.png             # NDCG@K and MRR vs episodes
-            └── click_epsilon.png       # Click rate and epsilon vs episodes
+    └── <agent_name>/                                   # Separate folder for each agent
+        └── run_YYYY_MM_DD_HH_MM_reward.png             # Reward vs episodes
+        └── run_YYYY_MM_DD_HH_MM_loss.png               # Loss vs episodes
+        └── run_YYYY_MM_DD_HH_MM_ranking.png            # NDCG@K and MRR vs episodes
+        └── run_YYYY_MM_DD_HH_MM_click_epsilon.png      # Click rate and epsilon vs episodes
 ```
 
 ---
