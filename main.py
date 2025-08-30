@@ -243,11 +243,13 @@ def main(argv):
     batch_size = FLAGS.batch_size
     num_topics = 10
 
-    TRAIN_EVERY = 2
-    MAX_TRAIN_UPDATES_PER_EPISODE = 256
-    RECREATE_ENV_EVERY = 20
-    REBUILD_REPLAY_EVERY = 20
-    CLEAR_SESSION_EVERY = 10
+    # Throughput & stability
+    TRAIN_EVERY = 1
+    UPDATES_PER_STEP = 1                 # keep graphs small
+    MAX_TRAIN_UPDATES_PER_EPISODE = 1000
+    RECREATE_ENV_EVERY = 25              # periodic refresh prevents creep
+    REBUILD_REPLAY_EVERY = 25
+    CLEAR_SESSION_EVERY = 25
 
     def make_env():
         net = ecomm_story(num_users=num_users, num_items=num_items, slate_size=slate_size)
@@ -280,7 +282,6 @@ def main(argv):
     time_step = rt.reset()
     time_step = _ensure_batched_item_feats(time_step, num_users)
 
-    # allow NoisyNet agent to cache a static matrix for its internal math (training only)
     if hasattr(agent, "set_static_item_features"):
         feats_once = time_step.observation["item_features"]
         feats_once = feats_once[0] if feats_once.shape.rank == 3 else feats_once
@@ -305,14 +306,25 @@ def main(argv):
 
     def build_replay_and_dataset():
         nonlocal replay_buffer, dataset, dataset_iter, warmup_frames, batch_size, replay_capacity
-        cap = 256
-        if replay_capacity > cap:
-            print(f"[MemoryGuard] Reducing replay_capacity from {replay_capacity} to {cap}.")
-            replay_capacity = cap
-        if batch_size > 8:
-            print(f"[MemoryGuard] Reducing batch_size from {batch_size} to 8.")
-            batch_size = 8
-        max_safe_warmup = max(64, int(0.5 * replay_capacity * num_users))
+
+        # Dueling needs a bit more room but not too much
+        if agent_name == "slateqdueling":
+            cap_target = 1024
+            bs_target = 16
+            replay_capacity = min(replay_capacity, cap_target)
+            batch_size = min(batch_size, bs_target)
+            max_safe_warmup = max(64, int(0.25 * replay_capacity * num_users))
+        else:
+            cap_target = 256
+            bs_target = 8
+            if replay_capacity > cap_target:
+                print(f"[MemoryGuard] Reducing replay_capacity from {replay_capacity} to {cap_target}.")
+                replay_capacity = cap_target
+            if batch_size > bs_target:
+                print(f"[MemoryGuard] Reducing batch_size from {batch_size} to {bs_target}.")
+                batch_size = bs_target
+            max_safe_warmup = max(64, int(0.5 * replay_capacity * num_users))
+
         if warmup_frames > max_safe_warmup:
             print(f"[MemoryGuard] Reducing warmup_frames from {warmup_frames} to {max_safe_warmup}.")
             warmup_frames = max_safe_warmup
@@ -358,6 +370,7 @@ def main(argv):
     try:
         for episode in range(num_episodes):
             try:
+                # periodic rebuilds/clears to prevent TF memory creep
                 if is_learning and episode > 0 and episode % REBUILD_REPLAY_EVERY == 0:
                     del dataset_iter, dataset, replay_buffer
                     trim_memory()
@@ -414,28 +427,44 @@ def main(argv):
 
                         frames = int(replay_buffer.num_frames().numpy())
                         if frames >= warmup_frames and (step % TRAIN_EVERY == 0) and (train_updates < MAX_TRAIN_UPDATES_PER_EPISODE):
-                            experience, _ = next(dataset_iter, (None, None))
-                            if experience is None:
-                                dataset_iter = iter(dataset)
-                                experience, _ = next(dataset_iter)
-                            loss_info = agent.train(experience)
-                            li = float(loss_info.loss.numpy())
-                            episode_losses.append(li)
-                            train_updates += 1
-                            if step % 500 == 0:
-                                print(f"[Episode {episode}] Step {step} | Loss: {li:.4f}")
-                            del experience
+                            try:
+                                for _ in range(UPDATES_PER_STEP):
+                                    experience, _ = next(dataset_iter, (None, None))
+                                    if experience is None:
+                                        dataset_iter = iter(dataset)
+                                        experience, _ = next(dataset_iter)
+                                    loss_info = agent.train(experience)
+                                    li = float(loss_info.loss.numpy())
+                                    episode_losses.append(li)
+                                    train_updates += 1
+                                del experience
+                            except (tf.errors.ResourceExhaustedError, MemoryError):
+                                # Adaptive downshift to avoid OOM kill
+                                nonlocal_batch = max(4, batch_size // 2)
+                                if nonlocal_batch < batch_size:
+                                    print(f"[OOM-Guard] Reducing batch_size from {batch_size} to {nonlocal_batch} and rebuilding dataset.")
+                                    batch_size = nonlocal_batch
+                                    del dataset_iter, dataset
+                                    trim_memory()
+                                    tf.keras.backend.clear_session()
+                                    dataset = replay_buffer.as_dataset(
+                                        num_parallel_calls=1,
+                                        sample_batch_size=batch_size,
+                                        num_steps=2,
+                                        single_deterministic_pass=False
+                                    ).prefetch(0)
+                                    dataset_iter = iter(dataset)
+                                else:
+                                    raise
 
-                    # --- epsilon decay per env step (if the collect policy supports it) ---
                     if hasattr(agent.collect_policy, "decay_epsilon"):
                         try:
                             agent.collect_policy.decay_epsilon(steps=1)
                         except Exception:
                             pass
-                    # ---------------------------------------------------------------------
 
                     time_step = next_time_step
-                    del action_step, action, next_time_step  # free tensors sooner
+                    del action_step, action, next_time_step
 
                 if last_slate is None:
                     last_slate = np.zeros((num_users, slate_size), dtype=np.int32)
@@ -452,7 +481,6 @@ def main(argv):
                 avg_loss = float(np.mean(episode_losses)) if episode_losses else 0.0
                 click_rate = float(np.mean(click_mask))
 
-                # read epsilon (if present) so it’s logged and plotted
                 eps_out = None
                 if is_learning and hasattr(agent.collect_policy, "epsilon"):
                     try:
@@ -474,7 +502,7 @@ def main(argv):
                 logger.log(payload)
 
                 if eps_out is not None:
-                    print(f"[Episode {episode}] Total Reward: {episode_reward:.2f} | click_rate={click_rate:.3f} | ε={eps_out:.3f}")
+                    print(f"[Episode {episode}] Total Reward: {episode_reward:.2f} | click_rate={click_rate:.3f} | eps={eps_out:.3f}")
                 else:
                     print(f"[Episode {episode}] Total Reward: {episode_reward:.2f} | click_rate={click_rate:.3f}")
 
@@ -543,7 +571,7 @@ def main(argv):
                         plt.plot(x, y_ma, label=f"MA({ma_window})", linestyle='-.', linewidth=1.25, color=ma_color)
                         plt.axhline(y=y_mean, linestyle='--', alpha=0.7, label=f"Mean = {y_mean:.3f}", color=ma_color)
                         plt.xlabel("Episode"); plt.ylabel(ylabel)
-                        plt.title(f"{title} — {agent_name}")
+                        plt.title(f"{title} - {agent_name}")
                         if xticks:
                             plt.xticks(xticks)
                         plt.grid(True, linestyle='--', alpha=0.4)
@@ -583,7 +611,7 @@ def main(argv):
                             plt.axhline(y2_mean, linestyle='--', alpha=0.7, label=f"MRR mean={y2_mean:.3f}", color="#FF9ACD")
 
                         plt.xlabel("Episode"); plt.ylabel("Ranking score")
-                        plt.title(f"Ranking Metrics over Episodes — {agent_name}")
+                        plt.title(f"Ranking Metrics over Episodes - {agent_name}")
                         if xticks:
                             plt.xticks(xticks)
                         plt.grid(True, linestyle='--', alpha=0.4)
@@ -616,7 +644,7 @@ def main(argv):
                             plt.axhline(y2_mean, linestyle='--', alpha=0.7, label=f"Eps mean={y2_mean:.3f}", color="#FF9ACD")
 
                         plt.xlabel("Episode"); plt.ylabel("Value")
-                        plt.title(f"Click Rate (and Epsilon) over Episodes — {agent_name}")
+                        plt.title(f"Click Rate and Epsilon over Episodes - {agent_name}")
                         if xticks:
                             plt.xticks(xticks)
                         plt.grid(True, linestyle='--', alpha=0.4)

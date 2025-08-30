@@ -1,0 +1,2 @@
+episode,total_reward,loss,ndcg@5,slate_mrr,click_rate
+0,1394.3994634151459,0.00693868111806271,0.0,0.0,0.9
