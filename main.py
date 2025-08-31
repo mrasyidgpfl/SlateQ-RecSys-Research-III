@@ -44,6 +44,12 @@ try:
 except Exception:
     pass
 
+# Run tf.data eagerly to avoid graph bloat/leaks.
+try:
+    tf.data.experimental.enable_debug_mode()
+except Exception:
+    pass
+
 try:
     tf.config.threading.set_intra_op_parallelism_threads(1)
     tf.config.threading.set_inter_op_parallelism_threads(1)
@@ -83,6 +89,7 @@ from src.agents.dqn_agent import DQNAgent
 from src.agents.slateq_agent import SlateQAgent
 from src.agents.slateq_dueling_agent import SlateQDuelingAgent
 from src.agents.slateq_noisynet_agent import SlateQNoisyNetAgent
+from src.agents.slateq_dueling_noisynet_agent import SlateQDuelingNoisyNetAgent  # <-- add
 
 from src.metrics.ranking_metrics import ndcg_at_k, slate_mrr
 from src.metrics.logger import MetricsLogger
@@ -91,7 +98,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_multi_string('gin_files', [], 'Paths to config files.')
 flags.DEFINE_multi_string('gin_bindings', [], 'Gin parameter bindings.')
 flags.DEFINE_string('agent', 'slateq',
-                    'Agent: random | greedy | ctxbandit | slateq | slateq_noisynet | dqn')
+                    'Agent: random | greedy | ctxbandit | slateq | slateq_noisynet | slateqdueling | slateqduelingnoisynet | dqn')
 
 flags.DEFINE_integer('episodes', 600, 'Number of episodes.')
 flags.DEFINE_integer('steps', 200, 'Steps per episode.')
@@ -163,6 +170,29 @@ def make_slateq_noisynet(time_step_spec, action_spec, **kwargs):
         noisy_sigma0=kwargs.get("noisy_std_init", 0.5),
         noisy_eval_collect=kwargs.get("noisy_eval_collect", True),
         noisy_eval_eval=kwargs.get("noisy_eval_eval", True),
+    )
+
+@register("slateqduelingnoisynet")
+def make_slateq_dueling_noisynet(time_step_spec, action_spec, **kwargs):
+    return SlateQDuelingNoisyNetAgent(
+        time_step_spec=time_step_spec,
+        action_spec=action_spec,
+        num_users=kwargs.get("num_users"),
+        num_topics=kwargs.get("num_topics", 10),
+        slate_size=kwargs.get("slate_size"),
+        num_items=kwargs.get("num_items"),
+        learning_rate=kwargs.get("learning_rate", 1e-3),
+        target_update_period=kwargs.get("target_update_period", 1000),
+        tau=kwargs.get("tau", 0.003),
+        gamma=kwargs.get("gamma", 0.95),
+        beta=kwargs.get("beta", 2.0),
+        huber_delta=kwargs.get("huber_delta", 1.0),
+        grad_clip_norm=kwargs.get("grad_clip_norm", 10.0),
+        reward_scale=kwargs.get("reward_scale", 10.0),
+        pos_weights=kwargs.get("pos_weights", None),
+        noisy_sigma0=kwargs.get("noisy_std_init", 0.5),
+        noisy_eval_collect=kwargs.get("noisy_eval_collect", True),
+        noisy_eval_eval=kwargs.get("noisy_eval_eval", False),
     )
 
 @register("dqn")
@@ -243,13 +273,20 @@ def main(argv):
     batch_size = FLAGS.batch_size
     num_topics = 10
 
-    # Throughput & stability
+    # Defaults
     TRAIN_EVERY = 1
-    UPDATES_PER_STEP = 1                 # keep graphs small
+    UPDATES_PER_STEP = 2
     MAX_TRAIN_UPDATES_PER_EPISODE = 1000
-    RECREATE_ENV_EVERY = 25              # periodic refresh prevents creep
-    REBUILD_REPLAY_EVERY = 25
-    CLEAR_SESSION_EVERY = 25
+    RECREATE_ENV_EVERY = 24
+    REBUILD_REPLAY_EVERY = 12
+    CLEAR_SESSION_EVERY = 12
+
+    # Gentler load for dueling variants (prevents mid-run OOM/kill)
+    if agent_name in ("slateqdueling", "slateqduelingnoisynet"):
+        UPDATES_PER_STEP = 1
+        RECREATE_ENV_EVERY = 24
+        REBUILD_REPLAY_EVERY = 8
+        CLEAR_SESSION_EVERY = 8
 
     def make_env():
         net = ecomm_story(num_users=num_users, num_items=num_items, slate_size=slate_size)
@@ -272,7 +309,6 @@ def main(argv):
         epsilon_decay_steps=int(0.6 * num_episodes * steps_per_episode),
     )
 
-    # Show initial epsilon if the agent has it
     if getattr(agent, "is_learning", False) and hasattr(agent.collect_policy, "epsilon"):
         try:
             print(f"Init ε = {float(agent.collect_policy.epsilon):.3f}")
@@ -307,24 +343,24 @@ def main(argv):
     def build_replay_and_dataset():
         nonlocal replay_buffer, dataset, dataset_iter, warmup_frames, batch_size, replay_capacity
 
-        # Dueling needs a bit more room but not too much
-        if agent_name == "slateqdueling":
-            cap_target = 1024
-            bs_target = 16
-            replay_capacity = min(replay_capacity, cap_target)
-            batch_size = min(batch_size, bs_target)
-            max_safe_warmup = max(64, int(0.25 * replay_capacity * num_users))
+        # Memory guard
+        if agent_name in ("slateqdueling", "slateqduelingnoisynet"):
+            cap_target = 256
+            bs_target = 8
         else:
             cap_target = 256
             bs_target = 8
-            if replay_capacity > cap_target:
-                print(f"[MemoryGuard] Reducing replay_capacity from {replay_capacity} to {cap_target}.")
-                replay_capacity = cap_target
-            if batch_size > bs_target:
-                print(f"[MemoryGuard] Reducing batch_size from {batch_size} to {bs_target}.")
-                batch_size = bs_target
-            max_safe_warmup = max(64, int(0.5 * replay_capacity * num_users))
 
+        if replay_capacity > cap_target:
+            print(f"[MemoryGuard] Reducing replay_capacity from {replay_capacity} to {cap_target}.")
+            replay_capacity = cap_target
+        if batch_size > bs_target:
+            print(f"[MemoryGuard] Reducing batch_size from {batch_size} to {bs_target}.")
+            batch_size = bs_target
+
+        # Start training after a fraction of the buffer is filled
+        frac = 0.5 if agent_name not in ("slateqdueling", "slateqduelingnoisynet") else 0.5
+        max_safe_warmup = max(64, int(frac * replay_capacity * num_users))
         if warmup_frames > max_safe_warmup:
             print(f"[MemoryGuard] Reducing warmup_frames from {warmup_frames} to {max_safe_warmup}.")
             warmup_frames = max_safe_warmup
@@ -370,7 +406,7 @@ def main(argv):
     try:
         for episode in range(num_episodes):
             try:
-                # periodic rebuilds/clears to prevent TF memory creep
+                # Periodic light reset to free graphs/memory
                 if is_learning and episode > 0 and episode % REBUILD_REPLAY_EVERY == 0:
                     del dataset_iter, dataset, replay_buffer
                     trim_memory()
@@ -388,9 +424,10 @@ def main(argv):
                         feats_once = time_step.observation["item_features"]
                         feats_once = feats_once[0] if feats_once.shape.rank == 3 else feats_once
                         agent.set_static_item_features(feats_once)
-                elif episode > 0:
-                    time_step = rt.reset()
-                    time_step = _ensure_batched_item_feats(time_step, num_users)
+                else:
+                    if episode > 0:
+                        time_step = rt.reset()
+                        time_step = _ensure_batched_item_feats(time_step, num_users)
 
                 episode_losses = []
                 episode_reward = 0.0
@@ -427,35 +464,17 @@ def main(argv):
 
                         frames = int(replay_buffer.num_frames().numpy())
                         if frames >= warmup_frames and (step % TRAIN_EVERY == 0) and (train_updates < MAX_TRAIN_UPDATES_PER_EPISODE):
-                            try:
-                                for _ in range(UPDATES_PER_STEP):
-                                    experience, _ = next(dataset_iter, (None, None))
-                                    if experience is None:
-                                        dataset_iter = iter(dataset)
-                                        experience, _ = next(dataset_iter)
-                                    loss_info = agent.train(experience)
-                                    li = float(loss_info.loss.numpy())
-                                    episode_losses.append(li)
-                                    train_updates += 1
-                                del experience
-                            except (tf.errors.ResourceExhaustedError, MemoryError):
-                                # Adaptive downshift to avoid OOM kill
-                                nonlocal_batch = max(4, batch_size // 2)
-                                if nonlocal_batch < batch_size:
-                                    print(f"[OOM-Guard] Reducing batch_size from {batch_size} to {nonlocal_batch} and rebuilding dataset.")
-                                    batch_size = nonlocal_batch
-                                    del dataset_iter, dataset
-                                    trim_memory()
-                                    tf.keras.backend.clear_session()
-                                    dataset = replay_buffer.as_dataset(
-                                        num_parallel_calls=1,
-                                        sample_batch_size=batch_size,
-                                        num_steps=2,
-                                        single_deterministic_pass=False
-                                    ).prefetch(0)
+                            for _ in range(UPDATES_PER_STEP):
+                                try:
+                                    experience, _ = next(dataset_iter)
+                                except StopIteration:
                                     dataset_iter = iter(dataset)
-                                else:
-                                    raise
+                                    experience, _ = next(dataset_iter)
+                                loss_info = agent.train(experience)
+                                li = float(loss_info.loss.numpy())
+                                episode_losses.append(li)
+                                train_updates += 1
+                            del experience
 
                     if hasattr(agent.collect_policy, "decay_epsilon"):
                         try:
@@ -579,7 +598,6 @@ def main(argv):
                         plt.savefig(plots_dir / f"{run_name}_{filename}.png")
                         plt.close()
 
-                    # Reward / Loss
                     plot_with_avg(metrics_df, "total_reward",
                                   "Total Reward over Episodes", "Total Reward", "reward",
                                   main_color="#0C00AD", ma_color="#9ABDFF")
@@ -587,7 +605,6 @@ def main(argv):
                                   "Training Loss over Episodes", "Loss", "loss",
                                   main_color="#B59AFF", ma_color="#9ABDFF")
 
-                    # Ranking metrics
                     has_ndcg = "ndcg@5" in metrics_df and metrics_df["ndcg@5"].notnull().any()
                     has_mrr  = "slate_mrr" in metrics_df and metrics_df["slate_mrr"].notnull().any()
                     if has_ndcg or has_mrr:
@@ -619,7 +636,6 @@ def main(argv):
                         plt.savefig(plots_dir / f"{run_name}_ranking.png")
                         plt.close()
                 
-                    # Click & Epsilon
                     has_click = "click_rate" in metrics_df and metrics_df["click_rate"].notnull().any()
                     has_eps   = "epsilon" in metrics_df and metrics_df["epsilon"].notnull().any()
                     if has_click or has_eps:
@@ -630,7 +646,6 @@ def main(argv):
                             y = metrics_df["click_rate"].values
                             y_ma = pd.Series(y).rolling(20, min_periods=1).mean().values
                             y_mean = float(np.nanmean(y))
-                            
                             plt.plot(x, y, label="Click Rate", color="#0C00AD")
                             plt.plot(x, y_ma, label="Click Rate MA(20)", linestyle='-.', linewidth=1.25, color="#9ABDFF")
                             plt.axhline(y=y_mean, linestyle='--', alpha=0.7, label=f"Click mean={y_mean:.3f}", color="#9ABDFF")
