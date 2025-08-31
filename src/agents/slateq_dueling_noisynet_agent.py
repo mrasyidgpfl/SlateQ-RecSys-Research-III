@@ -1,3 +1,4 @@
+# src/agents/slateq_dueling_noisynet_agent.py
 import tensorflow as tf
 import tensorflow_probability as tfp
 
@@ -7,6 +8,7 @@ from tf_agents.trajectories import policy_step, trajectory as trajectory_lib
 from tf_agents.policies import tf_policy
 
 
+# Safe helpers
 def _safe(x, name=None):
     """Replace NaN/Inf with zeros to keep training stable."""
     x = tf.convert_to_tensor(x)
@@ -17,6 +19,7 @@ def _l2_norm(x, axis=-1, eps=1e-8):
     return x / (tf.norm(x, ord=2, axis=axis, keepdims=True) + eps)
 
 
+# Noisy layer (Factorised Gaussian)
 class NoisyDense(tf.keras.layers.Layer):
     """Factorised Gaussian NoisyNet layer (Fortunato et al., 2017)."""
     def __init__(self, units, sigma0=0.5, activation=None, use_bias=True, kernel_regularizer=None, name=None):
@@ -88,6 +91,7 @@ class NoisyDense(tf.keras.layers.Layer):
         return y
 
 
+# Dueling Noisy SlateQ network
 class DuelingNoisySlateQNetwork(network.Network):
     def __init__(self, input_tensor_spec, num_items: int,
                  hidden=(256, 128, 64), sigma0=0.5, l2=0.0, name="DuelingNoisySlateQNetwork"):
@@ -112,6 +116,7 @@ class DuelingNoisySlateQNetwork(network.Network):
         return q_values, network_state
 
 
+# Policies (noisy togglable at action time)
 class NoisyAwareSlateQPolicy(tf_policy.TFPolicy):
     """Greedy top-k slate by ranking (cosine-style affinity) * Q(s,i)."""
     def __init__(self, time_step_spec, action_spec, q_network, slate_size: int, beta: float = 2.0, use_noisy: bool = True):
@@ -146,14 +151,15 @@ class NoisyAwareSlateQPolicy(tf_policy.TFPolicy):
         return policy_step.PolicyStep(action=action, state=policy_state)
 
 
+# Agent
 class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
     """
     SlateQ + Dueling + NoisyNet with stability fixes:
-    - Expected next-slate value (position-weighted) + Double-Q targets
-    - Reward squashing to [0,1]: (tanh(r) + 1) / 2
-    - Back-up on non-clicks with expected Q over shown slate
-    - Huber loss, NaN-grad guard, global-norm clip, Polyak target updates
-    - LEAN replay: cache static features via set_static_item_features()
+      - Expected next-slate value (position-weighted) + Double-Q targets
+      - Reward squashing to [0,1]: (tanh(r) + 1) / 2
+      - Back-up on non-clicks with expected Q over shown slate
+      - Huber loss, NaN-grad guard, global-norm clip, Polyak target updates
+      - LEAN replay: cache static features via set_static_item_features()
     """
     def __init__(self, time_step_spec, action_spec,
                  num_users=10, num_topics=10, slate_size=5, num_items=100,
@@ -173,8 +179,10 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
         self._reward_scale = float(reward_scale)
         self.is_learning = True
 
+        # Lean replay cache (optional)
         self._static_item_features = None
 
+        # Position weights for within-slate expectation
         if pos_weights is None:
             pw = tf.linspace(1.0, 0.3, self._slate_size)
         else:
@@ -188,19 +196,23 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
             pw = tf.cond(cur < self._slate_size, pad, trunc)
         self._pos_w = tf.reshape(pw, [1, self._slate_size])
 
+        # Networks
         input_tensor_spec = time_step_spec.observation["interest"]
         self._q_network = DuelingNoisySlateQNetwork(input_tensor_spec, num_items, sigma0=noisy_sigma0, l2=l2)
         self._target_q_network = DuelingNoisySlateQNetwork(input_tensor_spec, num_items, sigma0=noisy_sigma0, l2=l2)
 
+        # Build once and sync
         dummy_obs = {"interest": tf.zeros([1] + list(input_tensor_spec.shape), dtype=tf.float32)}
         dummy_step = tf.zeros([1], dtype=tf.int32)
         self._q_network(dummy_obs, dummy_step, training=False)
         self._target_q_network(dummy_obs, dummy_step, training=False)
         self._target_q_network.set_weights(self._q_network.get_weights())
 
+        # Optimiser / loss
         self._optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         self._huber = tf.keras.losses.Huber(delta=huber_delta, reduction=tf.keras.losses.Reduction.NONE)
 
+        # Policies (NoisyNet drives exploration. No epsilon.)
         self._policy = NoisyAwareSlateQPolicy(
             time_step_spec=time_step_spec, action_spec=action_spec,
             q_network=self._q_network, slate_size=slate_size,
@@ -224,7 +236,6 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
         )
 
     def set_static_item_features(self, item_features_nt: tf.Tensor):
-        """Cache a static [N,T] matrix to enable lean replay (no item_features in each transition)."""
         x = tf.convert_to_tensor(item_features_nt, dtype=tf.float32)
         if x.shape.rank == 3:
             x = x[0]
@@ -233,6 +244,7 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
     @property
     def collect_data_spec(self):
         if self._static_item_features is not None:
+            # Lean spec: drop item_features from replay
             return trajectory_lib.Trajectory(
                 step_type=self._time_step_spec.step_type,
                 observation={
@@ -245,6 +257,7 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
                 reward=self._time_step_spec.reward,
                 discount=self._time_step_spec.discount,
             )
+        # Full spec
         return trajectory_lib.Trajectory(
             step_type=self._time_step_spec.step_type,
             observation=self._time_step_spec.observation,
@@ -258,6 +271,7 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
     def _initialize(self):
         return tf.no_op()
 
+    # Training
     def _train(self, experience, weights=None):
         def slice_time(x, t_idx: int):
             return x[:, t_idx]
@@ -268,3 +282,130 @@ class SlateQDuelingNoisyNetAgent(tf_agent.TFAgent):
             rank = tf.rank(x)
             def flatten_all():
                 return tf.reshape(x, [-1])
+            def flatten_keep():
+                if tail_ndims == 0:
+                    return tf.reshape(x, [-1])
+                lead = tf.reduce_prod(shape[:-tail_ndims])
+                tail = shape[-tail_ndims:]
+                return tf.reshape(x, tf.concat([[lead], tail], axis=0))
+            return tf.cond(tf.less(rank, tail_ndims), flatten_all, flatten_keep)
+
+        def align_leading(x, B):
+            x = tf.convert_to_tensor(x)
+            xB = tf.shape(x)[0]
+            def same():
+                return x
+            def repeat_or_trunc():
+                idx = tf.math.mod(tf.range(B), xB)
+                return tf.gather(x, idx, axis=0)
+            return tf.cond(tf.equal(xB, B), same, repeat_or_trunc)
+
+        def to_BNT(feats_any, B, N, T):
+            rnk = tf.rank(feats_any)
+            def from4():
+                x = flatten_keep_tail(feats_any, tail_ndims=2)
+                return align_leading(x, B)
+            def from3():
+                x = flatten_keep_tail(feats_any, tail_ndims=2)
+                return align_leading(x, B)
+            def from2():
+                x = tf.expand_dims(feats_any, 0)
+                return tf.tile(x, [B, 1, 1])
+            x = tf.case([(tf.equal(rnk, 4), from4), (tf.equal(rnk, 3), from3)], default=from2)
+            return tf.reshape(x, [B, N, T])
+
+        interest_t_flat   = flatten_keep_tail(slice_time(experience.observation["interest"], 0), tail_ndims=1)
+        interest_tp1_flat = flatten_keep_tail(slice_time(experience.observation["interest"], 1), tail_ndims=1)
+        B = tf.shape(interest_tp1_flat)[0]
+        T = tf.shape(interest_tp1_flat)[1]
+        N = tf.constant(self._num_items, dtype=tf.int32)
+
+        obs_t   = {"interest": align_leading(interest_t_flat, B)}
+        obs_tp1 = {"interest": align_leading(interest_tp1_flat, B)}
+
+        act_t_any = slice_time(experience.action, 0)
+        action_flat = flatten_keep_tail(act_t_any, tail_ndims=1)
+        action_t = align_leading(action_flat, B)
+
+        click_pos_any = slice_time(experience.observation["choice"], 1)
+        click_pos_flat = flatten_keep_tail(click_pos_any, tail_ndims=0)
+        click_pos_t = tf.cast(align_leading(click_pos_flat, B), tf.int32)
+
+        if self._static_item_features is not None:
+            item_feats_t   = tf.tile(self._static_item_features[None, ...], [B, 1, 1])
+            item_feats_tp1 = item_feats_t
+        else:
+            item_feats_t_any   = slice_time(experience.observation["item_features"], 0)
+            item_feats_tp1_any = slice_time(experience.observation["item_features"], 1)
+            item_feats_t   = to_BNT(item_feats_t_any,   B, N, T)
+            item_feats_tp1 = to_BNT(item_feats_tp1_any, B, N, T)
+
+        batch_size = tf.shape(action_t)[0]
+        slate_size = tf.shape(action_t)[1]
+        clicked_mask = tf.less(click_pos_t, slate_size)
+        safe_click_pos = tf.minimum(click_pos_t, slate_size - 1)
+        row_idx = tf.range(batch_size, dtype=tf.int32)
+        idx = tf.stack([row_idx, safe_click_pos], axis=1)
+        clicked_item_id = tf.gather_nd(action_t, idx)
+
+        with tf.GradientTape() as tape:
+            q_tm1_all, _ = self._q_network(obs_t, training=True)
+            q_clicked = tf.gather(q_tm1_all, clicked_item_id, axis=1, batch_dims=1)
+
+            q_on_slate_t = tf.gather(q_tm1_all, action_t, axis=1, batch_dims=1)
+            i_t_n  = _l2_norm(obs_t["interest"], axis=-1)
+            f_t_n  = _l2_norm(item_feats_t, axis=-1)
+            v_all_t = _safe(tf.einsum("bt,bnt->bn", i_t_n, f_t_n))
+            v_on_slate_t = tf.gather(v_all_t, action_t, axis=1, batch_dims=1)
+            p_t = tf.nn.softmax(self._beta * v_on_slate_t, axis=-1)
+            p_t = p_t * self._pos_w
+            p_t = p_t / (tf.reduce_sum(p_t, axis=-1, keepdims=True) + 1e-8)
+            q_expected_t = tf.reduce_sum(p_t * q_on_slate_t, axis=-1)
+
+            q_tp1_online_all, _ = self._q_network(obs_tp1, training=True)
+            i_tp1_n = _l2_norm(obs_tp1["interest"], axis=-1)
+            f_tp1_n = _l2_norm(item_feats_tp1, axis=-1)
+            v_all_tp1 = _safe(tf.einsum("bt,bnt->bn", i_tp1_n, f_tp1_n))
+            score_next = v_all_tp1 * q_tp1_online_all
+            next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices
+
+            q_tp1_target_all, _ = self._target_q_network(obs_tp1, training=False)
+            q_next_on_slate = tf.gather(q_tp1_target_all, next_topk_idx, axis=1, batch_dims=1)
+
+            v_next_on_slate = tf.gather(v_all_tp1, next_topk_idx, axis=1, batch_dims=1)
+            p_next = tf.nn.softmax(self._beta * v_next_on_slate, axis=-1)
+            p_next = p_next * self._pos_w
+            p_next = p_next / (tf.reduce_sum(p_next, axis=-1, keepdims=True) + 1e-8)
+
+            expect_next = tf.reduce_sum(p_next * q_next_on_slate, axis=-1)
+
+            reward_t_any = slice_time(experience.reward, 1)
+            discount_tp1_any = tf.cast(slice_time(experience.discount, 1), tf.float32)
+            reward_flat = flatten_keep_tail(reward_t_any, tail_ndims=0)
+            discount_flat = flatten_keep_tail(discount_tp1_any, tail_ndims=0)
+            r_raw = align_leading(reward_flat, B)
+            r_scaled = _safe((tf.tanh(r_raw) + 1.0) * 0.5)
+            discount_tp1 = tf.clip_by_value(align_leading(discount_flat, B), 0.0, 1.0)
+
+            y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * expect_next)
+
+            q_pred_t = _safe(tf.where(clicked_mask, q_clicked, q_expected_t))
+
+            per_example = self._huber(y, q_pred_t)
+            loss = tf.reduce_mean(per_example)
+
+        grads = tape.gradient(loss, self._q_network.trainable_variables)
+        grads = [tf.where(tf.math.is_finite(g), g, tf.zeros_like(g)) if g is not None else None for g in grads]
+        grads, _ = tf.clip_by_global_norm(grads, self._grad_clip_norm)
+        self._optimizer.apply_gradients(zip(grads, self._q_network.trainable_variables))
+        self._train_step_counter.assign_add(1)
+
+        if self._tau > 0.0:
+            for w_t, w in zip(self._target_q_network.weights, self._q_network.weights):
+                w_t.assign(self._tau * w + (1.0 - self._tau) * w_t)
+        else:
+            step = int(self._train_step_counter.numpy())
+            if step % self._target_update_period == 0:
+                self._target_q_network.set_weights(self._q_network.get_weights())
+
+        return tf_agent.LossInfo(loss=loss, extra={})
