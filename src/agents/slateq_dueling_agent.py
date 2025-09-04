@@ -7,9 +7,7 @@ from tf_agents.trajectories import policy_step, trajectory as trajectory_lib
 from tf_agents.policies import tf_policy
 
 
-# ------------------------
 # Utils
-# ------------------------
 def _safe(x):
     """Replace NaN/Inf with zeros to keep training stable."""
     x = tf.convert_to_tensor(x)
@@ -20,9 +18,7 @@ def _l2_norm(x, axis=-1, eps=1e-8):
     return x / (tf.norm(x, ord=2, axis=axis, keepdims=True) + eps)
 
 
-# ------------------------
 # Networks / Policies
-# ------------------------
 class DuelingSlateQNetwork(network.Network):
     """Q(s,i) = V(s) + (A(s,i) - mean_i A(s,i))"""
     def __init__(self, input_tensor_spec, num_items: int, hidden=(256, 128, 64), l2=0.0,
@@ -133,11 +129,11 @@ class SlateQExplorationPolicy(tf_policy.TFPolicy):
 class SlateQDuelingAgent(tf_agent.TFAgent):
     """
     Dueling SlateQ with:
-      • expected next-slate value, Double-Q targets
-      • reward squashing → (tanh(r)+1)/2 in [0,1]
-      • non-click backup: E_t[Q(s,a)|slate]
-      • grad clipping, Huber loss, Polyak target updates
-      • lean replay support (optional)
+      - expected next-slate value, Double-Q targets
+      - reward squashing -> (tanh(r)+1)/2 in [0,1]
+      - non-click backup: E_t[Q(s,a)|slate]
+      - grad clipping, Huber loss, Polyak target updates
+      - lean replay support
     """
     def __init__(self, time_step_spec, action_spec,
                  num_users=10, num_topics=10, slate_size=5, num_items=100,
@@ -256,9 +252,7 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
     def _initialize(self):
         return tf.no_op()
 
-    # ------------------------
     # Training
-    # ------------------------
     def _train(self, experience, weights=None):
         def slice_time(x, t_idx: int):
             return x[:, t_idx]
@@ -301,7 +295,7 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
             x = tf.case([(tf.equal(rnk, 4), from4), (tf.equal(rnk, 3), from3)], default=from2)
             return tf.reshape(x, [B, N, T])
 
-        # ---- unpack t and t+1 ----
+        # unpack t and t+1
         interest_t_flat   = flatten_keep_tail(slice_time(experience.observation["interest"], 0), tail_ndims=1)
         interest_tp1_flat = flatten_keep_tail(slice_time(experience.observation["interest"], 1), tail_ndims=1)
         B = tf.shape(interest_tp1_flat)[0]
@@ -319,7 +313,7 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
         click_pos_flat = flatten_keep_tail(click_pos_any, tail_ndims=0)
         click_pos_t    = tf.cast(align_leading(click_pos_flat, B), tf.int32)
 
-        # item features t / t+1 → [B, N, T]
+        # item features t / t+1 -> [B, N, T]
         if self._static_item_features is not None:
             item_feats_t   = tf.tile(self._static_item_features[None, ...], [B, 1, 1])
             item_feats_tp1 = item_feats_t
@@ -329,59 +323,59 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
             item_feats_t   = to_BNT(item_feats_t_any,   B, N, T)
             item_feats_tp1 = to_BNT(item_feats_tp1_any, B, N, T)
 
-        # ---- click handling ----
+        # click handling
         batch_size = tf.shape(action_t)[0]
         slate_size = tf.shape(action_t)[1]
         clicked_mask = tf.less(click_pos_t, slate_size)
         safe_click_pos = tf.minimum(click_pos_t, slate_size - 1)
         row_idx = tf.range(batch_size, dtype=tf.int32)
         idx = tf.stack([row_idx, safe_click_pos], axis=1)
-        clicked_item_id = tf.gather_nd(action_t, idx)  # [B]
+        clicked_item_id = tf.gather_nd(action_t, idx)
 
         with tf.GradientTape() as tape:
             # Q(s_t, ·)
-            q_tm1_all, _ = self._q_network(obs_t, training=True)                 # [B, N]
+            q_tm1_all, _ = self._q_network(obs_t, training=True)
             q_tm1_all = _safe(q_tm1_all)
-            q_clicked = tf.gather(q_tm1_all, clicked_item_id, axis=1, batch_dims=1)  # [B]
+            q_clicked = tf.gather(q_tm1_all, clicked_item_id, axis=1, batch_dims=1)
 
             # Expected Q over shown slate at time t (for non-clicks)
-            q_on_slate_t = tf.gather(q_tm1_all, action_t, axis=1, batch_dims=1)      # [B, K]
+            q_on_slate_t = tf.gather(q_tm1_all, action_t, axis=1, batch_dims=1)
 
             # Affinity-based mixture weights (stop grad; clip logits)
             i_t_n  = tf.stop_gradient(_l2_norm(obs_t["interest"], axis=-1))
             ft_n   = tf.stop_gradient(_l2_norm(item_feats_t, axis=-1))
-            v_all_t = _safe(tf.einsum("bt,bnt->bn", i_t_n, ft_n))                    # [B, N]
-            v_on_slate_t = tf.gather(v_all_t, action_t, axis=1, batch_dims=1)        # [B, K]
+            v_all_t = _safe(tf.einsum("bt,bnt->bn", i_t_n, ft_n))
+            v_on_slate_t = tf.gather(v_all_t, action_t, axis=1, batch_dims=1)
             logits_t = tf.clip_by_value(self._beta * v_on_slate_t, -15.0, 15.0)
-            p_t = tf.nn.softmax(logits_t, axis=-1)                                   # [B, K]
+            p_t = tf.nn.softmax(logits_t, axis=-1)
             p_t = p_t * self._pos_w
             p_t = p_t / (tf.reduce_sum(p_t, axis=-1, keepdims=True) + 1e-8)
-            q_expected_t = tf.reduce_sum(p_t * q_on_slate_t, axis=-1)                # [B]
+            q_expected_t = tf.reduce_sum(p_t * q_on_slate_t, axis=-1)
 
-            # ---- Double-Q target on next state ----
-            q_tp1_online_all, _ = self._q_network(obs_tp1, training=False)           # [B, N]
+            # Double-Q target on next state
+            q_tp1_online_all, _ = self._q_network(obs_tp1, training=False)
             q_tp1_online_all = _safe(q_tp1_online_all)
 
             i_tp1_n  = tf.stop_gradient(_l2_norm(obs_tp1["interest"], axis=-1))
             f_tp1_n  = tf.stop_gradient(_l2_norm(item_feats_tp1, axis=-1))
-            v_all_tp1 = _safe(tf.einsum("bt,bnt->bn", i_tp1_n, f_tp1_n))             # [B, N]
+            v_all_tp1 = _safe(tf.einsum("bt,bnt->bn", i_tp1_n, f_tp1_n))
 
-            score_next = _safe(v_all_tp1 * q_tp1_online_all)                         # [B, N]
-            next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices    # [B, K]
+            score_next = _safe(v_all_tp1 * q_tp1_online_all)
+            next_topk_idx = tf.math.top_k(score_next, k=self._slate_size).indices
 
-            q_tp1_target_all, _ = self._target_q_network(obs_tp1, training=False)    # [B, N]
+            q_tp1_target_all, _ = self._target_q_network(obs_tp1, training=False)
             q_tp1_target_all = _safe(q_tp1_target_all)
 
-            q_next_on_slate   = tf.gather(q_tp1_target_all, next_topk_idx, axis=1, batch_dims=1)  # [B, K]
-            v_next_on_slate   = tf.gather(v_all_tp1,        next_topk_idx, axis=1, batch_dims=1)  # [B, K]
+            q_next_on_slate   = tf.gather(q_tp1_target_all, next_topk_idx, axis=1, batch_dims=1)
+            v_next_on_slate   = tf.gather(v_all_tp1,        next_topk_idx, axis=1, batch_dims=1)
             logits_next = tf.clip_by_value(self._beta * v_next_on_slate, -15.0, 15.0)
             p_next = tf.nn.softmax(logits_next, axis=-1)
             p_next = p_next * self._pos_w
             p_next = p_next / (tf.reduce_sum(p_next, axis=-1, keepdims=True) + 1e-8)
 
-            expect_next = tf.reduce_sum(p_next * q_next_on_slate, axis=-1)           # [B]
+            expect_next = tf.reduce_sum(p_next * q_next_on_slate, axis=-1)
 
-            # ---- rewards & discount (targets in [0,1]) ----
+            # rewards & discount (targets in [0,1])
             reward_t_any      = slice_time(experience.reward, 1)
             discount_tp1_any  = tf.cast(slice_time(experience.discount, 1), tf.float32)
             reward_flat       = flatten_keep_tail(reward_t_any,     tail_ndims=0)
@@ -390,10 +384,10 @@ class SlateQDuelingAgent(tf_agent.TFAgent):
             r_scaled          = _safe((tf.tanh(r_raw) + 1.0) * 0.5)
             discount_tp1      = tf.clip_by_value(align_leading(discount_flat, B), 0.0, 1.0)
 
-            y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * expect_next)  # [B]
+            y = tf.stop_gradient(r_scaled + self._gamma * discount_tp1 * expect_next)
 
             # Predictive value at time t
-            q_pred_t = _safe(tf.where(clicked_mask, q_clicked, q_expected_t))          # [B]
+            q_pred_t = _safe(tf.where(clicked_mask, q_clicked, q_expected_t))
 
             per_example = self._huber(y, q_pred_t)
             per_example = _safe(per_example)

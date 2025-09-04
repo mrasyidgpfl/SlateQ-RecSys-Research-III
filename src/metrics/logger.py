@@ -4,7 +4,6 @@ import json
 import datetime
 from pathlib import Path
 
-
 class MetricsLogger:
     def __init__(self, base_dir="logs"):
         timestamp = datetime.datetime.now().strftime("run_%Y_%m_%d_%H_%M")

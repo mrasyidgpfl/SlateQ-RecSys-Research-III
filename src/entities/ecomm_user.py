@@ -392,7 +392,6 @@ class ECommUser(static.StaticStateModel):
         scale = (1.0 - self.satiation_mul * very_aligned[:, None]) + (self.novelty_boost_mul * adjacent[:, None])
         interest_next = tf.where(clicked_f > 0.0, interest_next * scale, interest_next)
 
-        # Safety again after shaping
         interest_next = tf.clip_by_value(interest_next, -self.clip_interest, self.clip_interest)
         if self.renorm_interests:
             interest_next = tf.nn.l2_normalize(interest_next, axis=-1)

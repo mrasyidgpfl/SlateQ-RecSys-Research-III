@@ -124,6 +124,23 @@ The plots include mean lines and moving averages for smoother visualisation.
 
 ---
 
+## Sample Training Plots
+
+Below is an example set of training plots, generated from a single run.
+
+<p align="center">
+  <img src="readme/sample_plots.png" alt="Sample Training Plots" width="800">
+</p>
+
+These plots illustrate:
+
+- **Top-left:** Total reward over episodes, with moving average and mean reference lines.
+- **Top-right:** Training loss over episodes.
+- **Bottom-left:** Click rate and exploration epsilon decay.
+- **Bottom-right:** Ranking metrics, showing NDCG@5 and Slate MRR.
+
+---
+
 ## Notes
 
 - Random seeds are fixed (NumPy and TensorFlow) for reproducibility.

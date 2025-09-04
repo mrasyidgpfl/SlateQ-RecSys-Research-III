@@ -39,15 +39,13 @@ class ECommRecommender(StaticStateModel):
         return value.Value(rec_features=rec_features, slate=slate)
 
     def next_state(self, previous_state, action):
-        agent_slate = action.get("act")  # [num_users, slate_size]
+        agent_slate = action.get("act")
         rec_features = previous_state.get("rec_features")
 
-        # Optional: static shape guards (safe because num_users/slate_size are fixed)
         agent_slate = tf.ensure_shape(agent_slate, (self.num_users, self.slate_size))
         rec_features = tf.ensure_shape(rec_features, (self.num_users, self.num_topics))
 
         return value.Value(rec_features=rec_features, slate=agent_slate)
 
-    # Optional: not strictly used by the story, but harmless to keep for clarity.
     def action_spec(self):
         return tf.TensorSpec(shape=(self.num_users, self.slate_size), dtype=tf.int32, name="slate")
