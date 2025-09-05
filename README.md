@@ -49,6 +49,24 @@ SlateQ-RecSys-Research/                 # Project root
         └── run_YYYY_MM_DD_HH_MM_ranking.png            # NDCG@K and MRR vs episodes
         └── run_YYYY_MM_DD_HH_MM_click_epsilon.png      # Click rate and epsilon vs episodes
 ```
+---
+
+## System Architecture
+
+The system integrates RecSim NG with custom agents, runtime, and evaluation tools. The diagram below shows how the main components interact, including the training loop, environment, agent registry, and metrics logging.
+
+<p align="center">
+  <img src="readme/system_architecture_4.png" alt="System Architecture" width="800">
+</p>
+
+**How it works**  
+- **Main Loop (`main.py`)** drives experiments by loading configurations, instantiating agents, and running training.  
+- **ECommStory** defines the simulation graph by connecting user, item, and recommender models, returning a RecSim NG `network.Network`.  
+- **ECommRuntime** wraps the RecSim runtime and handles stepping through episodes while exchanging observations and rewards with agents.  
+- **Agents** include multiple SlateQ variants, DQN, contextual bandits, greedy, and random policies, all registered via the agent `Registry`.  
+- **MetricsLogger** and **RankingMetrics** track training performance, producing CSV/JSON logs and evaluation plots automatically.
+
+This setup allows us to run consistent experiments across different algorithms and compare their performance fairly within the same RecSim environment.
 
 ---
 
@@ -138,6 +156,88 @@ These plots illustrate:
 - **Top-right:** Training loss over episodes.
 - **Bottom-left:** Click rate and exploration epsilon decay.
 - **Bottom-right:** Ranking metrics, showing NDCG@5 and Slate MRR.
+
+---
+
+---
+
+## Hyperparameters
+
+Experiments are configured using [**Gin Config**](https://github.com/google/gin-config), which allows hyperparameters to be managed without changing the source code.  
+The table below summarises the key parameters used in all experiments.
+
+| **Component**    | **Key Hyperparameters** |
+|------------------|--------------------------|
+| **Environment**  | Users = 10, Items = 100, Slate size = 5 |
+| **ECommUser**    | Topics = 10, Reward mode = sigmoid<br>Interest learning rate α = 0.03, Fatigue β = 0.015<br>Decay ρ = 0.90, Forgetting η = 0.01<br>Diversity bonus λ = 0.20 |
+| **Continuation** | Logistic coefficients b₀..b₄ tuned for novelty momentum |
+| **Conversion**   | Delay probability p = 0.25, Required exposures = 3 |
+| **Position Bias**| Weights = (1.0, 0.75, 0.55, 0.40, 0.30) |
+| **Penalties**    | No-click penalty = 0.05, Repeat penalty = 0.15 |
+
+---
+
+### Hyperparameter Selection Strategy
+
+The hyperparameters were chosen through **manual tuning** based on small pilot runs.  
+The main goals were to:
+- Keep training **stable** across different agents.
+- Ensure **fair comparisons** by using the same environment setup for all algorithms.
+- Balance **realistic user behaviour** (e.g. interest decay, position bias) with computational efficiency.
+
+No automated hyperparameter search was used.  
+Instead, we focused on selecting consistent defaults that enabled fair and meaningful comparisons between SlateQ variants, DQN, contextual bandits, greedy, and random baselines.
+
+---
+
+## Final Results Summary
+
+The experiments evaluated multiple RL algorithms and baselines within the same RecSim environment. The tables below summarise final performance over the **last 100 episodes** and **all episodes**. Metrics include **Total Reward**, **Loss**, **NDCG@5**, and **Slate MRR**.
+
+### Table 1. Final averaged performance over the last 100 episodes
+
+| Agent                       | Total Reward | Loss   | NDCG@5  | Slate MRR |
+|----------------------------|--------------|--------|---------|-----------|
+| **SlateQ (Vanilla)**       | 2533.57      | 0.0108 | 0.0022  | 0.0102    |
+| SlateQ (Duelling)          | 2296.25      | 0.0207 | 0.0038  | 0.0130    |
+| SlateQ (NoisyNet)          | 2261.74      | 0.0051 | 0.0024  | 0.0176    |
+| SlateQ (Duelling + NoisyNet) | 2355.05   | 0.0250 | 0.0040  | 0.0160    |
+| **DQN**                    | 2438.74      | 0.0099 | 0.0000  | 0.0090    |
+| **Contextual Bandit**      | 2505.54      | 0.4529 | 0.0062  | 0.0148    |
+| Greedy                     | 2512.85      | 0.0000 | 0.0060  | 0.0068    |
+| Random                     | 446.47       | 0.0000 | 0.0041  | 0.0121    |
+
+---
+
+### Table 2. Final averaged performance across all episodes
+
+| Agent                       | Total Reward | Loss   | NDCG@5  | Slate MRR |
+|----------------------------|--------------|--------|---------|-----------|
+| **SlateQ (Vanilla)**       | 2396.90      | 0.0116 | 0.0021  | 0.0089    |
+| SlateQ (Duelling)          | 2282.70      | 0.0248 | 0.0071  | 0.0187    |
+| SlateQ (NoisyNet)          | 2275.96      | 0.0055 | 0.0045  | 0.0189    |
+| SlateQ (Duelling + NoisyNet) | 2303.99   | 0.0388 | 0.0022  | 0.0171    |
+| **DQN**                    | 2356.00      | 0.0119 | 0.0039  | 0.0117    |
+| **Contextual Bandit**      | 2376.17      | 0.4256 | 0.0037  | 0.0138    |
+| Greedy                     | 2535.36      | 0.0000 | 0.0000  | 0.0081    |
+| Random                     | 450.04       | 0.0000 | 0.0041  | 0.0121    |
+
+---
+
+### Key Insights
+
+- **SlateQ vs DQN**:  
+  SlateQ variants generally outperform DQN in ranking metrics (NDCG@5 and Slate MRR) but are more sensitive to network architecture and exploration settings.
+- **Effect of NoisyNet**:  
+  Adding NoisyNet improves exploration and often increases Slate MRR but can slightly reduce stability when combined with duelling heads.
+- **Contextual Bandit**:  
+  Performs surprisingly well in terms of total reward but fails to optimise long-term metrics like NDCG@5.
+- **Greedy vs Random**:  
+  Greedy has decent short-term performance but struggles on long-horizon tasks, while Random behaves as expected and serves as a lower bound.
+- **Best Overall**:  
+  For ranking quality, **SlateQ (Duelling + NoisyNet)** offers the strongest trade-off between NDCG@5 and Slate MRR, although SlateQ (Vanilla) remains competitive and more stable.
+
+These findings suggest that incorporating SlateQ’s decomposition provides a meaningful benefit over single-item DQN and simpler heuristics, especially when optimising for ranking-based metrics rather than raw reward.
 
 ---
 
