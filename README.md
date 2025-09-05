@@ -178,9 +178,9 @@ The table below summarises the key parameters used in all experiments.
 
 The hyperparameters were chosen through manual tuning based on small pilot runs.  
 The main goals were to:
-- Keep training **stable** across different agents.
-- Ensure **fair comparisons** by using the same environment setup for all algorithms.
-- Balance **realistic user behaviour** (e.g. interest decay, position bias) with computational efficiency.
+- Keep training stable across different agents.
+- Ensure fair comparisons by using the same environment setup for all algorithms.
+- Balance realistic user behaviour (e.g. interest decay, position bias) with computational efficiency.
 
 No automated hyperparameter search was used. The experiments used consistent defaults to allow fair comparisons between SlateQ variants, DQN, contextual bandits, greedy, and random baselines.
 
