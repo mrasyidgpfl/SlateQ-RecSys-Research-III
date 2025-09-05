@@ -64,9 +64,7 @@ The system integrates RecSim NG with custom agents, runtime, and evaluation tool
 - **ECommStory** defines the simulation graph by connecting user, item, and recommender models, returning a RecSim NG `network.Network`.  
 - **ECommRuntime** wraps the RecSim runtime and handles stepping through episodes while exchanging observations and rewards with agents.  
 - **Agents** include multiple SlateQ variants, DQN, contextual bandits, greedy, and random policies, all registered via the agent `Registry`.  
-- **MetricsLogger** and **RankingMetrics** track training performance, producing CSV/JSON logs and evaluation plots automatically.
-
-This setup allows us to run consistent experiments across different algorithms and compare their performance fairly within the same RecSim environment.
+- **MetricsLogger** and **RankingMetrics** handle training performance tracking and generate CSV/JSON logs as well as evaluation plots automatically
 
 ---
 
@@ -159,8 +157,6 @@ These plots illustrate:
 
 ---
 
----
-
 ## Hyperparameters
 
 Experiments are configured using [**Gin Config**](https://github.com/google/gin-config), which allows hyperparameters to be managed without changing the source code.  
@@ -179,20 +175,19 @@ The table below summarises the key parameters used in all experiments.
 
 ### Hyperparameter Selection Strategy
 
-The hyperparameters were chosen through **manual tuning** based on small pilot runs.  
+The hyperparameters were chosen through manual tuning based on small pilot runs.  
 The main goals were to:
 - Keep training **stable** across different agents.
 - Ensure **fair comparisons** by using the same environment setup for all algorithms.
 - Balance **realistic user behaviour** (e.g. interest decay, position bias) with computational efficiency.
 
-No automated hyperparameter search was used.  
-Instead, we focused on selecting consistent defaults that enabled fair and meaningful comparisons between SlateQ variants, DQN, contextual bandits, greedy, and random baselines.
+No automated hyperparameter search was used. The experiments used consistent defaults to allow fair comparisons between SlateQ variants, DQN, contextual bandits, greedy, and random baselines.
 
 ---
 
 ## Final Results Summary
 
-The experiments evaluated multiple RL algorithms and baselines within the same RecSim environment. The tables below summarise final performance over the **last 100 episodes** and **all episodes**. Metrics include **Total Reward**, **Loss**, **NDCG@5**, and **Slate MRR**.
+The experiments evaluated multiple RL algorithms and baselines within the same RecSim environment. The tables below summarise final performance over the last 100 episodes and all episodes. Metrics include total reward, loss, NDCG@5, and slate MRR.
 
 ### Table 1. Final averaged performance over the last 100 episodes
 
@@ -202,8 +197,8 @@ The experiments evaluated multiple RL algorithms and baselines within the same R
 | SlateQ (Duelling)          | 2296.25      | 0.0207 | 0.0038  | 0.0130    |
 | SlateQ (NoisyNet)          | 2261.74      | 0.0051 | 0.0024  | 0.0176    |
 | SlateQ (Duelling + NoisyNet) | 2355.05   | 0.0250 | 0.0040  | 0.0160    |
-| **DQN**                    | 2438.74      | 0.0099 | 0.0000  | 0.0090    |
-| **Contextual Bandit**      | 2505.54      | 0.4529 | 0.0062  | 0.0148    |
+| DQN                    | 2438.74      | 0.0099 | 0.0000  | 0.0090    |
+| Contextual Bandit      | 2505.54      | 0.4529 | 0.0062  | 0.0148    |
 | Greedy                     | 2512.85      | 0.0000 | 0.0060  | 0.0068    |
 | Random                     | 446.47       | 0.0000 | 0.0041  | 0.0121    |
 
@@ -217,8 +212,8 @@ The experiments evaluated multiple RL algorithms and baselines within the same R
 | SlateQ (Duelling)          | 2282.70      | 0.0248 | 0.0071  | 0.0187    |
 | SlateQ (NoisyNet)          | 2275.96      | 0.0055 | 0.0045  | 0.0189    |
 | SlateQ (Duelling + NoisyNet) | 2303.99   | 0.0388 | 0.0022  | 0.0171    |
-| **DQN**                    | 2356.00      | 0.0119 | 0.0039  | 0.0117    |
-| **Contextual Bandit**      | 2376.17      | 0.4256 | 0.0037  | 0.0138    |
+| DQN                    | 2356.00      | 0.0119 | 0.0039  | 0.0117    |
+| Contextual Bandit      | 2376.17      | 0.4256 | 0.0037  | 0.0138    |
 | Greedy                     | 2535.36      | 0.0000 | 0.0000  | 0.0081    |
 | Random                     | 450.04       | 0.0000 | 0.0041  | 0.0121    |
 
