@@ -114,6 +114,7 @@ Available agent names:
 - `slateq`
 - `slateqdueling`
 - `slateqnoisynet`
+- `slateqduelingnoisynet`
 - `dqn`
 
 ---
