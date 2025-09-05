@@ -21,8 +21,9 @@ SlateQ-RecSys-Research/                 # Project root
 │   │   ├── greedy_agent.py             # Greedy baseline (affinity only)
 │   │   ├── ctxbandit_agent.py          # Contextual bandit baseline
 │   │   ├── slateq_agent.py             # Vanilla SlateQ agent
-│   │   ├── slateq_dueling_agent.py     # SlateQ with dueling Q-network
+│   │   ├── slateq_dueling_agent.py     # SlateQ with duelling Q-network
 │   │   ├── slateq_noisynet_agent.py    # SlateQ with noisy layers for exploration
+│   │   ├── slateq_dueling_noisynet_agent.py  # SlateQ with duelling head + NoisyNet layers
 │   │   └── dqn_agent.py                # Vanilla DQN agent (non-slate baseline)
 │   ├── entities/                       # Core RecSim NG entity/state models
 │   │   ├── ecomm_user.py               # User model with long-term interest dynamics
