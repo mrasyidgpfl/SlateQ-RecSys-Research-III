@@ -108,14 +108,14 @@ python main.py --gin_files=experiments/configs/base.gin slateq
 ```
 
 Available agent names:
+- `slateq`
 - `random`
 - `greedy`
 - `ctxbandit`
-- `slateq`
+- `dqn`
 - `slateqdueling`
 - `slateqnoisynet`
 - `slateqduelingnoisynet`
-- `dqn`
 
 ---
 
